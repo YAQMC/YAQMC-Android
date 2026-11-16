@@ -1,18 +1,18 @@
 # 鸣谢
 
-YAQMC-Android 基于 YAQMC，使用 Kotlin / Compose 原生界面与 Rust Core，是非官方 QQ 音乐 Android 客户端。感谢下面的个人、项目与工具提供公开知识、协议行为参考、
+YAQMC-Android 是 YAQMC 的 Android 原生版，面向日常听歌进行精简和优化。感谢下面的个人、项目与工具提供公开知识、协议行为参考、
 测试方法或工程协助。出现在此处不代表其作者认可、参与发布或为 YAQMC 提供支持。
 
 ## 特别感谢
 
-- **[YAQMC/YAQMC](https://github.com/YAQMC/YAQMC)** — 本项目的上游，提供原有客户端、Rust Core 与工程基础；保留原有许可证、版权归属和来源记录。
+- **[YAQMC/YAQMC](https://github.com/YAQMC/YAQMC)** — YAQMC-Android 最初从该仓库 fork 并移植，现作为 YAQMC 组织内的 Android 原生版继续开发；保留原有许可证、版权归属和来源记录。
 - **Flechazo** — 感谢公开分享 QMC/MFLAC、臻品音质取源与本地流式解密链路的研究和工程思路。
   `Flechazo/qmc` 在核对时没有仓库许可证，因此 YAQMC 只将其作为行为参考，未复制、vendoring 或改写其
   源代码；YAQMC 的 Rust 实现与测试独立完成。
 - **[amll-dev/applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics)** — 歌词时间轴、
   间奏呈现与动态层次的实现来源。已退出的旧 Web 界面使用官方发布的 `@applemusic-like-lyrics/core` 与
-  `@applemusic-like-lyrics/react` `0.5.2` 包；上游为 `AGPL-3.0-only`。许可证与发布义务见
-  [歌词文档](https://github.com/ltzu929/YAQMC/blob/b0b5acf9d91ebb5e677ee6a95b38318faa558e15/docs/lyrics.md#amll-decision)。
+  `@applemusic-like-lyrics/react` `0.5.2` 包；该版本采用 `AGPL-3.0-only`。许可证与发布义务见
+  [歌词文档](https://github.com/YAQMC/YAQMC-Android/blob/b0b5acf9d91ebb5e677ee6a95b38318faa558e15/docs/lyrics.md#amll-decision)。
 - **OpenAI Codex** — 协助工程实现、测试设计、代码审查、文档整理和发布流程。
 
 ## 互操作研究

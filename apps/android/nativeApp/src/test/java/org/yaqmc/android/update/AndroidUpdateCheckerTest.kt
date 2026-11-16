@@ -11,7 +11,7 @@ class AndroidUpdateCheckerTest {
         version = requireNotNull(YaqmcVersion.parse(version)),
         versionName = version.removePrefix("v"),
         prerelease = prerelease,
-        releaseUrl = "https://github.com/ltzu929/YAQMC/releases/tag/${version.removePrefix("v")}",
+        releaseUrl = "https://github.com/YAQMC/YAQMC-Android/releases/tag/${version.removePrefix("v")}",
         notes = "notes",
     )
 
@@ -58,16 +58,17 @@ class AndroidUpdateCheckerTest {
     @Test
     fun `release links belong to this project and reject upstream or lookalike URLs`() {
         assertTrue(AndroidUpdateChecker.isProjectReleaseUrl(
-            "https://github.com/ltzu929/YAQMC/releases/tag/v0.1.4-beta.1",
+            "https://github.com/YAQMC/YAQMC-Android/releases/tag/v0.1.6",
         ))
         listOf(
             "https://github.com/YAQMC/YAQMC/releases/tag/v1.0.0",
-            "https://github.com/ltzu929/YAQMC-other/releases/tag/v1.0.0",
-            "https://github.com.evil.example/ltzu929/YAQMC/releases/tag/v1.0.0",
-            "https://github.com@evil.example/ltzu929/YAQMC/releases/tag/v1.0.0",
-            "https://user@github.com/ltzu929/YAQMC/releases/tag/v1.0.0",
-            "https://github.com:443/ltzu929/YAQMC/releases/tag/v1.0.0",
-            "http://github.com/ltzu929/YAQMC/releases/tag/v1.0.0",
+            "https://github.com/ltzu929/YAQMC/releases/tag/v1.0.0",
+            "https://github.com/YAQMC/YAQMC-Android-other/releases/tag/v1.0.0",
+            "https://github.com.evil.example/YAQMC/YAQMC-Android/releases/tag/v1.0.0",
+            "https://github.com@evil.example/YAQMC/YAQMC-Android/releases/tag/v1.0.0",
+            "https://user@github.com/YAQMC/YAQMC-Android/releases/tag/v1.0.0",
+            "https://github.com:443/YAQMC/YAQMC-Android/releases/tag/v1.0.0",
+            "http://github.com/YAQMC/YAQMC-Android/releases/tag/v1.0.0",
         ).forEach { assertFalse(AndroidUpdateChecker.isProjectReleaseUrl(it), it) }
     }
 

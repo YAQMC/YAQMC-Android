@@ -19,7 +19,7 @@ use std::fmt::Write as _;
 
 /// The origin+path prefix that every generated URL must start with. Anything else
 /// is rejected before the URL is handed to the opener plugin.
-pub const ISSUE_URL_PREFIX: &str = "https://github.com/ltzu929/YAQMC/issues/new";
+pub const ISSUE_URL_PREFIX: &str = "https://github.com/YAQMC/YAQMC-Android/issues/new";
 /// Conservative body cap so the generated URL stays well below the GitHub server
 /// limit and typical browser address bar limit. Anything longer forces the user
 /// into copy-issue-text fallback.
@@ -569,7 +569,11 @@ mod tests {
     fn validate_open_url_rejects_other_origins() {
         assert!(validate_open_url("https://example.com/issues/new?title=x").is_err());
         assert!(validate_open_url("https://github.com/other/repo/issues/new").is_err());
+        assert!(validate_open_url("https://github.com/ltzu929/YAQMC/issues/new?title=x").is_err());
         assert!(validate_open_url("https://github.com/YAQMC/YAQMC/pulls").is_err());
+        assert!(
+            validate_open_url("https://github.com/YAQMC/YAQMC-Android/issues/new?title=x").is_ok()
+        );
         let ok = compose_url(IssueCategory::Bug, "hi", "there").0;
         assert!(validate_open_url(&ok).is_ok());
     }

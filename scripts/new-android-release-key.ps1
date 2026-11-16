@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param([Parameter(Mandatory = $true)][string]$Destination)
 
+# This helper creates a new identity for an independent app. Existing
+# YAQMC-Android releases must continue to use their current signing key.
 $ErrorActionPreference = 'Stop'
 $destinationPath = [IO.Path]::GetFullPath($Destination)
 $repositoryPath = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
@@ -39,18 +41,18 @@ try {
     [IO.File]::WriteAllText((Join-Path $destinationPath ($entry.Key + '.txt')), $entry.Value)
   }
   $instructions = @'
-YAQMC Android release signing material — PRIVATE
+Android signing material for a new app identity — PRIVATE
 
-In YAQMC/YAQMC repository Settings > Environments > release-signing,
-create five environment secrets. For each ANDROID_RELEASE_*.txt file,
-use its filename without .txt as the secret name and its full content as the value.
-Do not use code scanning, Dependabot secrets, variables, release assets, or Git commits.
+This is a newly generated signing identity for an independent app.
+Existing YAQMC-Android releases must continue to use their current signing key.
+The current project release workflow is documented in docs/development.md.
+Keep the ANDROID_RELEASE_*.txt files private; do not commit or publish them.
 
 The .p12 file contains the private signing key. The .cer file is public.
 Back up this entire directory to an encrypted offline location before deleting any copy.
 Passwords in the .txt files are plaintext; keep this directory private.
-Use this same key for future releases. Existing installations signed with an old
-key cannot be updated in place without a compatible signing lineage.
+For future releases of the independent app, keep using this same key. Existing
+installations signed with an old key cannot be updated in place without a compatible signing lineage.
 Do not uninstall an existing app without first preserving any data you need.
 No secrets have been uploaded automatically.
 '@

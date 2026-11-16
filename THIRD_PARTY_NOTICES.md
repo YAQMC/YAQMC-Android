@@ -28,7 +28,7 @@ Packages: `@applemusic-like-lyrics/core` `0.5.2` and `@applemusic-like-lyrics/re
 License: GNU Affero General Public License version 3 only (`AGPL-3.0-only`). These official packages were used by
 the retired desktop lyric renderer without vendoring or local modification. The current native Android app does not depend on them. The package license text and corresponding
 source are available from the upstream project; distributors of YAQMC must satisfy the GPLv3/AGPLv3 obligations
-described in [docs/lyrics.md](https://github.com/ltzu929/YAQMC/blob/b0b5acf9d91ebb5e677ee6a95b38318faa558e15/docs/lyrics.md#amll-decision).
+described in [docs/lyrics.md](https://github.com/YAQMC/YAQMC-Android/blob/b0b5acf9d91ebb5e677ee6a95b38318faa558e15/docs/lyrics.md#amll-decision).
 
 `mzj3920/qqmusic-decrypt`, AynaLivePlayer/miaosic, and official QQ Music Electron ASAR contents are **not**
 in-tree YAQMC sources. The `mzj3920` and ASAR claims were removed from the current pinned `qm-api-rs` revision;

@@ -279,7 +279,7 @@ fn events() -> Value {
                 "allowPrerelease": false,
                 "channel": "latest",
                 "version": "1.2.3",
-                "releaseUrl": "https://github.com/YAQMC/YAQMC/releases"
+                "releaseUrl": "https://github.com/YAQMC/YAQMC-Android/releases"
             }),
         }),
     })

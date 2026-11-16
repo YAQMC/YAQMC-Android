@@ -6,9 +6,9 @@
 
 继续使用自己的 QQ 音乐账号、会员曲库和歌单，在简洁的 Android 界面里浏览、播放和看歌词。
 
-基于 [YAQMC](https://github.com/YAQMC/YAQMC) 开发的非官方客户端，使用 Kotlin / Jetpack Compose 原生界面。
+YAQMC-Android 是 [YAQMC](https://github.com/YAQMC/YAQMC) 的 Android 原生版，面向日常听歌进行精简和优化。
 
-**[下载安卓版](https://github.com/ltzu929/YAQMC/releases/latest)** · [版本记录](https://github.com/ltzu929/YAQMC/releases) · [问题反馈](https://github.com/ltzu929/YAQMC/issues)
+**[下载安卓版](https://github.com/YAQMC/YAQMC-Android/releases/latest)** · [版本记录](https://github.com/YAQMC/YAQMC-Android/releases) · [问题反馈](https://github.com/YAQMC/YAQMC-Android/issues)
 
 ## 界面预览
 
@@ -24,7 +24,7 @@
 
 ## 下载与安装
 
-在[最新正式版](https://github.com/ltzu929/YAQMC/releases/latest)下载 `.apk` 并安装。希望体验预览版本时，可在[全部版本](https://github.com/ltzu929/YAQMC/releases)中选择标记为 Pre-release 的版本。
+在[最新正式版](https://github.com/YAQMC/YAQMC-Android/releases/latest)下载 `.apk` 并安装。希望体验预览版本时，可在[全部版本](https://github.com/YAQMC/YAQMC-Android/releases)中选择标记为 Pre-release 的版本。
 
 - 系统：Android 8.0 及以上。
 - 架构：ARM64（`arm64-v8a`）。
@@ -39,7 +39,7 @@
 
 **覆盖安装。** `0.1.6` 及后续版本沿用新包名和本项目签名；从 `0.1.5` 或更早版本切换时，`0.1.6` 会单独安装，登录需重新授权。
 
-使用问题和建议请提交到 [Issues](https://github.com/ltzu929/YAQMC/issues)，附上应用版本、设备与系统版本、复现步骤和实际结果。截图与日志请移除账号凭据和私人信息。
+使用问题和建议请提交到 [Issues](https://github.com/YAQMC/YAQMC-Android/issues)，附上应用版本、设备与系统版本、复现步骤和实际结果。截图与日志请移除账号凭据和私人信息。
 
 ## 后续方向
 
@@ -57,4 +57,4 @@
 
 本项目基于 YAQMC 开发，与腾讯或 QQ 音乐没有从属或合作关系，歌曲访问和音质取决于账号权益及原平台限制。
 
-项目采用 [GPL-3.0-or-later](LICENSE)。上游及第三方来源见[鸣谢](ACKNOWLEDGEMENTS.md)、[第三方声明](THIRD_PARTY_NOTICES.md)和[对应源码说明](CORRESPONDING_SOURCE_POLICY.md)。
+项目采用 [GPL-3.0-or-later](LICENSE)。项目来源与第三方资料见[鸣谢](ACKNOWLEDGEMENTS.md)、[第三方声明](THIRD_PARTY_NOTICES.md)和[对应源码说明](CORRESPONDING_SOURCE_POLICY.md)。

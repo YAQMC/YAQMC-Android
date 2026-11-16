@@ -141,7 +141,7 @@ internal class AndroidUpdateChecker(
 
     companion object {
         private const val RELEASES_API =
-            "https://api.github.com/repos/ltzu929/YAQMC/releases?per_page=30&page=1"
+            "https://api.github.com/repos/YAQMC/YAQMC-Android/releases?per_page=30&page=1"
         private const val MAX_RESPONSE_CHARS = 2 * 1024 * 1024
         private const val MAX_NOTES_CHARS = 4_000
 
@@ -151,7 +151,7 @@ internal class AndroidUpdateChecker(
                 uri.host.equals("github.com", ignoreCase = true) &&
                 uri.port == -1 &&
                 uri.userInfo == null &&
-                uri.path.startsWith("/ltzu929/YAQMC/releases/")
+                uri.path.startsWith("/YAQMC/YAQMC-Android/releases/")
         }.getOrDefault(false)
     }
 }

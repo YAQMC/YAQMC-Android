@@ -111,7 +111,7 @@ internal fun NativeAbout(model: NativeViewModel) {
             if (update.notes.isNotBlank()) Text(update.notes, style = MaterialTheme.typography.bodySmall)
         }
         item { TextButton(onClick = {
-            model.openProjectLink(context, "https://github.com/ltzu929/YAQMC")
+            model.openProjectLink(context, "https://github.com/YAQMC/YAQMC-Android")
         }) { Text(stringResource(R.string.native_about_repository)) } }
     }
 }

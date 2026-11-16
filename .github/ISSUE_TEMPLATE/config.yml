@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: 中文使用文档
-    url: https://github.com/ltzu929/YAQMC/blob/main/README.md
+    url: https://github.com/YAQMC/YAQMC-Android/blob/main/README.md
     about: Android 原生客户端的状态、构建与开发入口。
