@@ -6,6 +6,53 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NativeCatalogTest {
+    @Test fun playlistPlaybackLoadsAll217FavoritesThroughOpaqueCursors() = runBlocking {
+        val cursors = mutableListOf<String?>()
+        val repository = NativeCatalogRepository { method, params ->
+            assertEquals("provider_favorite_songs", method)
+            val cursor = params.text("cursor").takeIf(String::isNotBlank)
+            cursors += cursor
+            val offset = cursor?.substringAfter("opaque:")?.toInt() ?: 0
+            val end = (offset + 48).coerceAtMost(217)
+            JSONObject().put("items", org.json.JSONArray((offset until end).map { JSONObject().put("id", "song-$it") }))
+                .put("authRevision", 7).put("total", 217).put("nextCursor", if (end < 217) "opaque:$end" else JSONObject.NULL)
+        }
+        val tracks = repository.playbackTracks(NativeRoute("favorites"), 7)
+        assertEquals((0 until 217).map { "song-$it" }, tracks.map { it.id })
+        assertEquals(listOf(null, "opaque:48", "opaque:96", "opaque:144", "opaque:192"), cursors)
+    }
+
+    @Test fun accountPlaylistPlaybackKeepsSummaryAndDeduplicatesBoundarySongs() = runBlocking {
+        val summary = """{"id":"p","title":"Playlist","ownership":"owned"}"""
+        val repository = NativeCatalogRepository { method, params ->
+            assertEquals("provider_account_playlist_tracks", method)
+            assertEquals("p", params.getJSONObject("playlist").getString("id"))
+            assertEquals("owned", params.getJSONObject("playlist").getString("ownership"))
+            val first = params.isNull("cursor")
+            JSONObject().put("summary", JSONObject(summary)).put("tracks", JSONObject()
+                .put("items", org.json.JSONArray(if (first) """[{"id":"1"},{"id":"2"}]""" else """[{"id":"2"},{"id":"3"}]"""))
+                .put("authRevision", 2).put("nextCursor", if (first) "next" else JSONObject.NULL))
+        }
+        assertEquals(listOf("1", "2", "3"), repository.playbackTracks(NativeRoute("account-playlist", "p", playlist = summary), 2).map { it.id })
+    }
+
+    @Test fun incompleteOrExpiredPlaylistNeverReturnsAPartialPlaybackList() = runBlocking {
+        for ((badPage, code) in listOf(
+            """{"items":[{"id":"2"}],"authRevision":3}""" to "authentication-expired",
+            """{"items":[{"id":"2"}],"authRevision":2,"stale":true}""" to "native.playlist.incomplete",
+            """{"items":[{"id":"2"}],"authRevision":2,"nextCursor":"next"}""" to "native.playlist.incomplete",
+        )) {
+            var calls = 0
+            val repository = NativeCatalogRepository { _, _ ->
+                calls++
+                JSONObject(if (calls == 1) """{"items":[{"id":"1"}],"authRevision":2,"nextCursor":"next"}""" else badPage)
+            }
+            try { repository.playbackTracks(NativeRoute("favorites"), 2); fail("must reject incomplete playlist") }
+            catch (error: CoreFailure) { assertEquals(code, error.code) }
+            assertEquals(2, calls)
+        }
+    }
+
     @Test fun discoverPreservesAllSevenCategoriesAndDisplayOnlyContent() {
         val page = NativeModels.discover(JSONObject("""{"featured":[{"id":"f","title":"Feature"}],"popularSonglists":[{"id":"p"}],"charts":[{"id":"c"}],"newSongs":{"tracks":[{"id":"s"}]},"newAlbums":[{"id":"a"}],"categories":[{"encArea":"x"}],"newMvs":[{"id":"m","artist":"Singer"}],"podcasts":[{"id":"pod"}]}"""))
         assertEquals(listOf("featured", "charts", "newSongs", "newAlbums", "categories", "newMvs", "podcasts"), page.tabs.map { it.id })

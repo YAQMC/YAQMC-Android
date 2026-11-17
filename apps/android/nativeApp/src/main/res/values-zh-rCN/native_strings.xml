@@ -14,6 +14,9 @@
     <string name="native_library">媒体库</string>
     <string name="native_settings">设置</string>
     <string name="native_settings_playback">播放</string>
+    <string name="native_allow_concurrent_playback">允许同时播放</string>
+    <string name="native_allow_concurrent_playback_summary">与其他应用一起播放音频，通话和耳机断连时仍暂停音乐。</string>
+    <string name="native_playlist_play_failed">未能加载完整歌单，请重试。</string>
     <string name="native_settings_personalization">个性化</string>
     <string name="native_settings_maintenance">存储与维护</string>
     <string name="native_theme">主题</string>

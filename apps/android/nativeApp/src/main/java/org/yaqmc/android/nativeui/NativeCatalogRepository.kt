@@ -1,10 +1,32 @@
 package org.yaqmc.android.nativeui
 
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import org.json.JSONObject
 import org.yaqmc.android.R
 
 /** Uses the same provider methods as the old Android client, with no duplicate business cache. */
 internal class NativeCatalogRepository(private val request: suspend (String, JSONObject) -> JSONObject) {
+    suspend fun playbackTracks(target: NativeRoute, authRevision: Long? = null): List<Track> {
+        val tracks = linkedMapOf<String, Track>()
+        val cursors = mutableSetOf<String>()
+        var cursor: String? = null
+        var number = 1
+        do {
+            val page = load(target, false, number++, cursor)
+            currentCoroutineContext().ensureActive()
+            if (authRevision != null) {
+                val envelope = if (target.kind == "account-playlist") page.raw.optJSONObject("tracks") else page.raw
+                if (envelope?.optLong("authRevision", -1) != authRevision) throw CoreFailure("authentication-expired", "")
+            }
+            if (page.stale) throw CoreFailure("native.playlist.incomplete", "")
+            page.tracks.forEach { tracks.putIfAbsent(it.key, it) }
+            cursor = page.cursor
+            if (page.hasMore && (cursor == null || !cursors.add(cursor))) throw CoreFailure("native.playlist.incomplete", "")
+        } while (page.hasMore)
+        return tracks.values.toList()
+    }
+
     suspend fun load(target: NativeRoute, refresh: Boolean, number: Int, cursor: String?): CatalogPage {
         fun provider() = JSONObject().put("providerId", "qqmusic")
         return when (target.kind) {

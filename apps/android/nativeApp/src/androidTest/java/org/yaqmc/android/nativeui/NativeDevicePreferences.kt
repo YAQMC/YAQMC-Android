@@ -13,14 +13,14 @@ import org.junit.rules.ExternalResource
 
 @UnstableApi
 internal class NativeDevicePreferences(private val activityClass: Class<out ComponentActivity> = NativeActivity::class.java) : ExternalResource() {
-        private val keys = setOf("theme", "language", "lyrics", "appearance", "lyric-presets")
+        private val keys = setOf("theme", "language", "lyrics", "appearance", "lyric-presets", NativePreferenceStore.ALLOW_CONCURRENT_PLAYBACK)
         private var original: Map<String, *> = emptyMap<String, Any>()
         override fun before() {
             assertOfflineCoreInactive()
             val storage = context().getSharedPreferences("native-ui", Context.MODE_PRIVATE)
             original = storage.all.filterKeys { it in keys }
             storage.edit().putString("theme", "light").putString("language", "en-US").remove("lyrics").remove("appearance")
-                .remove("lyric-presets").commit()
+                .remove("lyric-presets").remove(NativePreferenceStore.ALLOW_CONCURRENT_PLAYBACK).commit()
             // Some ROMs block ActivityScenario's first launch from a background process.
             // A shell foreground launch avoids changing the device's permission settings.
             val component = "${context().packageName}/${activityClass.name}"

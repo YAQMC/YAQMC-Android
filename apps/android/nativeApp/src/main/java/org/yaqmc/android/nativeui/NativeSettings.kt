@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.*
@@ -31,6 +32,14 @@ internal fun Settings(model: NativeViewModel) {
     LazyColumn(Modifier.fillMaxSize().testTag("settings-list"), contentPadding = PaddingValues(vertical = 8.dp)) {
         item { SettingsSection(stringResource(R.string.native_settings_playback)) }
         item { NativeSettingRow(stringResource(R.string.native_default_quality), stringResource(NativePlayback.qualityLabel(quality)), "settings-quality", !qualityBusy) { qualityDialog = true } }
+        item {
+            ListItem(headlineContent = { Text(stringResource(R.string.native_allow_concurrent_playback)) },
+                supportingContent = { Text(stringResource(R.string.native_allow_concurrent_playback_summary)) },
+                trailingContent = { Switch(checked = preferences.allowConcurrentPlayback, onCheckedChange = null) },
+                colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.background),
+                modifier = Modifier.fillMaxWidth().testTag("settings-concurrent-playback")
+                    .toggleable(preferences.allowConcurrentPlayback, role = Role.Switch, onValueChange = model::setAllowConcurrentPlayback))
+        }
         item { NativeSettingRow(stringResource(R.string.native_lyric_settings), tag = "settings-lyrics") { model.navigate(NativeRoute("lyric-settings")) } }
         item { SettingsSection(stringResource(R.string.native_settings_personalization)) }
         item { NativeSettingRow(stringResource(R.string.native_appearance), nativeThemeLabel(preferences.theme), "settings-appearance") { model.navigate(NativeRoute("appearance-settings")) } }

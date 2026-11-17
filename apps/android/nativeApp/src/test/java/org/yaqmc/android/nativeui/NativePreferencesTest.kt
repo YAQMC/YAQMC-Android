@@ -5,6 +5,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NativePreferencesTest {
+    @Test fun concurrentPlaybackDefaultsOffAndSurvivesRestartWithoutChangingOtherSettings() {
+        val storage = MemoryPreferences(mutableMapOf("theme" to "dark", "future-setting" to "keep"))
+        val store = NativePreferenceStore(storage)
+        assertFalse(store.state.value.allowConcurrentPlayback)
+        store.setAllowConcurrentPlayback(true)
+        store.setLanguage("zh-CN")
+        val restart = NativePreferenceStore(storage)
+        assertTrue(restart.state.value.allowConcurrentPlayback)
+        assertEquals("dark", restart.state.value.theme)
+        assertEquals("zh-CN", restart.state.value.language)
+        assertEquals("keep", storage.getString("future-setting", null))
+        restart.setAllowConcurrentPlayback(false)
+        assertFalse(NativePreferenceStore(storage).state.value.allowConcurrentPlayback)
+    }
+
 
     @Test fun presetChangesSurviveRestartWithoutTouchingLyricsOrOtherPreferences() {
         val storage = MemoryPreferences(mutableMapOf("theme" to "dark", "language" to "zh-CN", "future-setting" to "keep"))

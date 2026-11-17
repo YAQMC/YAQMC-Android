@@ -13,6 +13,115 @@ import org.yaqmc.android.R
 /** Fake Core responses exercise cancellation and write policies without touching a real account. */
 @UnstableApi
 class NativeCatalogStateTest {
+    @Test fun bothPlaylistButtonsWaitForAll217SongsAndIgnoreRepeatedClicks() = runBlocking {
+        for (shuffle in listOf(false, true)) {
+            val moreStarted = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val fake = FakeCore { method, params -> when (method) {
+                "provider_account_snapshot" -> authenticated()
+                "provider_favorite_songs" -> {
+                    val offset = params.text("cursor").substringAfter("page:", "0").toInt()
+                    if (offset > 0) { moreStarted.complete(Unit); release.await() }
+                    val end = (offset + 48).coerceAtMost(217)
+                    JSONObject().put("items", org.json.JSONArray((offset until end).map { JSONObject().put("id", "s$it") }))
+                        .put("authRevision", 1).put("total", 217).put("nextCursor", if (end < 217) "page:$end" else JSONObject.NULL)
+                }
+                else -> JSONObject()
+            } }
+            withModel(fake) { model ->
+                main { model.navigate(NativeRoute("favorites")) }
+                await { model.page.value.loaded && model.page.value.page.tracks.size == 48 }
+                main { model.playPage(model.page.value.page.tracks, shuffle) }
+                moreStarted.await()
+                main { model.playPage(model.page.value.page.tracks, !shuffle) }
+                assertTrue(model.preparingPage.value)
+                assertFalse(fake.calls.any { it.first == "player_play_tracks" })
+                release.complete(Unit)
+                await { !model.preparingPage.value }
+                val request = fake.calls.single { it.first == "player_play_tracks" }.second.getJSONObject("request")
+                assertEquals(shuffle, request.getBoolean("shuffle"))
+                assertEquals((0 until 217).map { "s$it" }, request.getJSONArray("tracks").objects().map { it.text("id") })
+                assertEquals(48, model.page.value.page.tracks.size)
+            }
+        }
+    }
+
+    @Test fun failedPlaylistPreparationDoesNotReplaceQueueAndCanRetry() = runBlocking {
+        var fail = true
+        val fake = FakeCore { method, params -> when (method) {
+            "provider_account_snapshot" -> authenticated()
+            "provider_favorite_songs" -> if (params.isNull("cursor")) JSONObject("""{"items":[{"id":"1"}],"authRevision":1,"nextCursor":"next"}""")
+                else if (fail) throw CoreFailure("timeout", "") else JSONObject("""{"items":[{"id":"2"}],"authRevision":1}""")
+            else -> JSONObject()
+        } }
+        withModel(fake) { model ->
+            main { model.navigate(NativeRoute("favorites")) }
+            await { model.page.value.loaded }
+            main { model.playPage(model.page.value.page.tracks, true) }
+            await { model.failedPagePlayback.value != null }
+            assertFalse(model.preparingPage.value)
+            assertFalse(fake.calls.any { it.first.startsWith("player_") })
+            assertEquals(R.string.native_timeout, model.failedPagePlayback.value!!.second.resource)
+            fail = false
+            main { model.playPage(model.page.value.page.tracks, true) }
+            await { fake.calls.any { it.first == "player_play_tracks" } }
+            assertEquals(2, fake.calls.single { it.first == "player_play_tracks" }.second.getJSONObject("request").getJSONArray("tracks").length())
+            assertNull(model.failedPagePlayback.value)
+        }
+    }
+
+    @Test fun cancelledPlaylistPreparationCannotPlayAfterNavigationOrAccountSwitch() = runBlocking {
+        for (cancel in listOf("cancel", "navigate", "account", "play-other")) {
+            var revision = 1L
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val fake = FakeCore { method, params -> when (method) {
+                "provider_account_snapshot" -> authenticated(revision)
+                "provider_favorite_songs" -> if (params.isNull("cursor")) JSONObject("""{"items":[{"id":"1"}],"authRevision":$revision,"nextCursor":"next"}""")
+                    else { started.complete(Unit); withContext(NonCancellable) { release.await() }; JSONObject("""{"items":[{"id":"2"}],"authRevision":1}""") }
+                else -> JSONObject()
+            } }
+            withModel(fake) { model ->
+                main { model.navigate(NativeRoute("favorites")) }
+                await { model.page.value.loaded }
+                main { model.playPage(model.page.value.page.tracks, false) }
+                started.await()
+                main { when (cancel) {
+                    "cancel" -> model.cancelPlaybackPreparation()
+                    "navigate" -> model.selectRoot("discover")
+                    "account" -> { revision = 2; model.refreshAccount() }
+                    else -> model.play(listOf(Track(JSONObject("""{"id":"other"}"""))))
+                } }
+                release.complete(Unit)
+                delay(100)
+                assertFalse(model.preparingPage.value)
+                assertNull(model.failedPagePlayback.value)
+                val plays = fake.calls.filter { it.first == "player_play_tracks" }
+                assertEquals(if (cancel == "play-other") 1 else 0, plays.size)
+                if (plays.isNotEmpty()) assertEquals("other", plays.single().second.getJSONObject("request").getJSONArray("tracks").getJSONObject(0).text("id"))
+            }
+        }
+    }
+
+    @Test fun accountPlaylistCardLoadsEveryPageBeforeStarting() = runBlocking {
+        val fake = FakeCore { method, params -> when (method) {
+            "provider_account_snapshot" -> authenticated()
+            "provider_account_playlist_tracks" -> {
+                assertEquals("p", params.getJSONObject("playlist").text("id"))
+                val first = params.isNull("cursor")
+                JSONObject().put("summary", params.getJSONObject("playlist")).put("tracks", JSONObject()
+                    .put("authRevision", 1).put("items", org.json.JSONArray(if (first) """[{"id":"1"}]""" else """[{"id":"2"}]"""))
+                    .put("nextCursor", if (first) "next" else JSONObject.NULL))
+            }
+            else -> JSONObject()
+        } }
+        withModel(fake) { model ->
+            main { model.refreshAccount(); model.playCard(CatalogItem("account-playlist", JSONObject("""{"id":"p"}"""))) }
+            await { fake.calls.any { it.first == "player_play_tracks" } }
+            assertEquals(2, fake.calls.single { it.first == "player_play_tracks" }.second.getJSONObject("request").getJSONArray("tracks").length())
+        }
+    }
+
     @Test fun startupAccountSnapshotLoadsAccountHomeEvenWhenRestoreEventWasMissed() = runBlocking {
         val signedIn = java.util.concurrent.atomic.AtomicBoolean(false)
         val releaseRevalidation = CompletableDeferred<Unit>()

@@ -42,6 +42,8 @@ internal fun Catalog(model: NativeViewModel, route: NativeRoute, share: (Track) 
     val state by model.page.collectAsStateWithLifecycle()
     val account by model.account.collectAsStateWithLifecycle()
     val rememberedTab by model.discoverTab.collectAsStateWithLifecycle()
+    val preparingPlayback by model.preparingPage.collectAsStateWithLifecycle()
+    val failedPlayback by model.failedPagePlayback.collectAsStateWithLifecycle()
     val accountPage = route.kind in setOf("favorites", "recent", "account-playlists", "account-playlist")
     val page = if (accountPage && !account.authenticated) CatalogPage(titleFor(route.kind)) else state.page
     val activeTab = when (route.kind) {
@@ -81,10 +83,15 @@ internal fun Catalog(model: NativeViewModel, route: NativeRoute, share: (Track) 
             val visibleTracks = sections.flatMap { it.tracks }
             if (visibleTracks.isNotEmpty() && route.kind != "home") item {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { model.play(visibleTracks, shuffle = false) }) { Text(stringResource(R.string.native_play_all)) }
-                    OutlinedButton(onClick = { model.play(visibleTracks, shuffle = true) }) { Text(stringResource(R.string.native_shuffle)) }
+                    Button(onClick = { model.playPage(visibleTracks, shuffle = false) }, enabled = !preparingPlayback, modifier = Modifier.testTag("catalog-play-all")) { Text(stringResource(R.string.native_play_all)) }
+                    OutlinedButton(onClick = { model.playPage(visibleTracks, shuffle = true) }, enabled = !preparingPlayback, modifier = Modifier.testTag("catalog-shuffle")) { Text(stringResource(R.string.native_shuffle)) }
                     OutlinedButton(onClick = { model.addTracks(visibleTracks) }) { Text(stringResource(R.string.native_add_queue)) }
                 }
+                if (preparingPlayback) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth().testTag("catalog-playback-loading"))
+                    TextButton(onClick = model::cancelPlaybackPreparation) { Text(stringResource(R.string.native_cancel)) }
+                }
+                failedPlayback?.let { (shuffle, error) -> ErrorRetry(error, { model.playPage(visibleTracks, shuffle) }) }
             }
             state.error?.let { error -> item { ErrorRetry(error, { model.load(refresh = true) }) } }
             if (page.stale) item {

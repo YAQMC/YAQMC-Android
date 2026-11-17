@@ -12,6 +12,7 @@ internal data class NativePreferences(
     val theme: String = "system", val language: String = "system", val lyrics: NativeLyricPreferences = NativeLyricPreferences(),
     val appearance: NativeAppearancePreferences = NativeAppearancePreferences(),
     val lyricPresets: NativeLyricPresetPreferences = NativeLyricPresetPreferences(),
+    val allowConcurrentPlayback: Boolean = false,
 ) {
     fun isDark(systemDark: Boolean): Boolean = when (theme) {
         "light" -> false
@@ -39,8 +40,14 @@ internal class NativePreferenceStore(private val storage: SharedPreferences) {
         lyrics = NativeLyricPreferences.decode(read("lyrics")),
         appearance = NativeAppearancePreferences.decode(read("appearance")),
         lyricPresets = NativeLyricPresetPreferences.decode(read("lyric-presets")),
+        allowConcurrentPlayback = readAllowConcurrentPlayback(storage),
     ))
     val state = _state.asStateFlow()
+
+    fun setAllowConcurrentPlayback(value: Boolean) {
+        storage.edit { putBoolean(ALLOW_CONCURRENT_PLAYBACK, value) }
+        _state.value = _state.value.copy(allowConcurrentPlayback = value)
+    }
 
     fun setTheme(value: String) {
         val normalized = normalizeTheme(value)
@@ -75,6 +82,10 @@ internal class NativePreferenceStore(private val storage: SharedPreferences) {
     private fun read(key: String): String? = try { storage.getString(key, null) } catch (_: ClassCastException) { null }
 
     companion object {
+        const val ALLOW_CONCURRENT_PLAYBACK = "allow-concurrent-playback"
+        fun readAllowConcurrentPlayback(storage: SharedPreferences): Boolean =
+            try { storage.getBoolean(ALLOW_CONCURRENT_PLAYBACK, false) } catch (_: ClassCastException) { false }
+
         private fun normalizeTheme(value: String?) = value?.takeIf { it in setOf("system", "light", "dark") } ?: "system"
         private fun normalizeLanguage(value: String?) = value?.takeIf { it in setOf("system", "zh-CN", "en-US") } ?: "system"
     }

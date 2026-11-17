@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -18,6 +19,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import org.yaqmc.android.BuildConfig
+import org.yaqmc.android.nativeui.NativePreferenceStore
 
 @UnstableApi
 class PlaybackService : MediaSessionService() {
@@ -31,8 +33,20 @@ class PlaybackService : MediaSessionService() {
     private var focusHeld = false
     private var noisyReceiverRegistered = false
     private var shuttingDown = false
+    private lateinit var preferences: SharedPreferences
+    private var stopModeMonitoring: (() -> Unit)? = null
+    private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == NativePreferenceStore.ALLOW_CONCURRENT_PLAYBACK) handler.post { updateConcurrentPlayback() }
+    }
+    private val callPoll = object : Runnable {
+        override fun run() {
+            checkCallMode()
+            if (shouldMonitorCalls()) handler.postDelayed(this, 500L)
+        }
+    }
 
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        if (focusPolicy.allowConcurrentPlayback || shuttingDown || focusRequest == null) return@OnAudioFocusChangeListener
         if (BuildConfig.DEBUG) android.util.Log.d("YAQMCFocus", "change=$change playbackIntent=${player?.hasPlaybackIntent()}")
         val focusChange = when (change) {
             AudioManager.AUDIOFOCUS_GAIN -> FocusChange.GAIN
@@ -57,6 +71,7 @@ class PlaybackService : MediaSessionService() {
             applyFocusAction(
                 focusPolicy.onBecomingNoisy(player?.hasPlaybackIntent() == true),
             )
+            updateCallMonitoring()
         }
     }
 
@@ -75,6 +90,9 @@ class PlaybackService : MediaSessionService() {
             onPlaybackResourcesChanged = ::updatePlaybackResources,
             onStopRequested = ::stopAfterCore,
         )
+        preferences = getSharedPreferences("native-ui", Context.MODE_PRIVATE)
+        preferences.registerOnSharedPreferenceChangeListener(preferenceListener)
+        updateConcurrentPlayback()
         val sessionBuilder = MediaSession.Builder(this, player!!).setId("yaqmc")
         packageManager.getLaunchIntentForPackage(packageName)?.let { launch ->
             sessionBuilder.setSessionActivity(PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
@@ -98,6 +116,9 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        shuttingDown = true
+        preferences.unregisterOnSharedPreferenceChangeListener(preferenceListener)
+        stopCallMonitoring()
         if (active === this) active = null
         if (noisyReceiverRegistered) {
             unregisterReceiver(noisyReceiver)
@@ -129,6 +150,10 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun requestAudioFocus(): Boolean {
+        if (focusPolicy.allowConcurrentPlayback) {
+            if (isCallMode(audioManager.mode)) return false
+            return true
+        }
         if (focusHeld && !focusPolicy.awaitingFocusGain) return true
         val attributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -175,8 +200,9 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun updatePlaybackResources(held: Boolean) {
+        updateCallMonitoring()
         // Keep the request registered during a temporary interruption so Android can return GAIN.
-        if (focusPolicy.awaitingFocusGain) { updateWakeLock(false); return }
+        if (focusPolicy.awaitingFocusGain || focusPolicy.awaitingCallEnd) { updateWakeLock(false); return }
         if (held && !focusHeld && !requestAudioFocus()) {
             player?.pauseForSystem()
             return
@@ -187,6 +213,7 @@ class PlaybackService : MediaSessionService() {
 
     private fun noteUserPause() {
         focusPolicy.onUserPause()
+        updateCallMonitoring()
         if (player?.hasPlaybackIntent() != true) abandonAudioFocus()
     }
 
@@ -198,10 +225,56 @@ class PlaybackService : MediaSessionService() {
     private fun stopAfterCore() {
         if (shuttingDown) return
         shuttingDown = true
+        stopCallMonitoring()
         abandonAudioFocus()
         updateWakeLock(false)
         stopSelf()
     }
+
+    private fun updateConcurrentPlayback() {
+        if (shuttingDown) return
+        val enabled = NativePreferenceStore.readAllowConcurrentPlayback(preferences)
+        if (enabled == focusPolicy.allowConcurrentPlayback) return
+        focusPolicy.setAllowConcurrentPlayback(enabled)
+        if (enabled) abandonAudioFocus()
+        else if (player?.hasPlaybackIntent() == true && !requestAudioFocus()) player?.pauseForSystem()
+        updateCallMonitoring()
+    }
+
+    private fun shouldMonitorCalls(): Boolean = !shuttingDown &&
+        (focusPolicy.allowConcurrentPlayback && player?.hasPlaybackIntent() == true || focusPolicy.awaitingCallEnd)
+
+    private fun updateCallMonitoring() {
+        if (!shouldMonitorCalls()) { stopCallMonitoring(); return }
+        if (stopModeMonitoring == null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val listener = AudioManager.OnModeChangedListener { checkCallMode() }
+                audioManager.addOnModeChangedListener(ContextCompat.getMainExecutor(this), listener)
+                stopModeMonitoring = { audioManager.removeOnModeChangedListener(listener) }
+            } else {
+                handler.postDelayed(callPoll, 500L)
+                stopModeMonitoring = { handler.removeCallbacks(callPoll) }
+            }
+        }
+        checkCallMode()
+    }
+
+    private fun checkCallMode() {
+        if (shuttingDown) return
+        applyFocusAction(focusPolicy.onCallStateChanged(isCallMode(audioManager.mode), player?.hasPlaybackIntent() == true))
+        if (!shouldMonitorCalls()) stopCallMonitoring()
+    }
+
+    private fun stopCallMonitoring() {
+        stopModeMonitoring?.invoke()
+        stopModeMonitoring = null
+    }
+
+    private fun isCallMode(mode: Int): Boolean = mode == AudioManager.MODE_RINGTONE ||
+        mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_IN_COMMUNICATION ||
+        (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && mode == AudioManager.MODE_CALL_SCREENING) ||
+        (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            (mode == AudioManager.MODE_CALL_REDIRECT || mode == AudioManager.MODE_COMMUNICATION_REDIRECT))
 
     companion object {
         private const val START_TIMEOUT_MS = 2_000L

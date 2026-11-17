@@ -29,6 +29,35 @@ class NativeExperienceUiTest {
     private lateinit var model: NativeViewModel
     @After fun close() { compose.runOnIdle { if (::model.isInitialized) model.viewModelScope.cancel() } }
 
+    @Test fun fullPlaylistPlaybackShowsLoadingCancellationAndRetry() {
+        install()
+        compose.runOnIdle { model.navigate(NativeRoute("favorites")) }
+        compose.waitUntil(5000) { model.page.value.loaded && model.page.value.page.tracks.size == 4 }
+        core.favoriteGate = CompletableDeferred()
+        compose.onNodeWithTag("catalog-play-all").performClick()
+        compose.onNodeWithTag("catalog-playback-loading").assertIsDisplayed()
+        compose.onNodeWithTag("catalog-play-all").assertIsNotEnabled()
+        compose.onNodeWithTag("catalog-shuffle").assertIsNotEnabled()
+        capture("p1-playlist-loading")
+        compose.onNodeWithText("取消").performClick()
+        compose.onNodeWithTag("catalog-playback-loading").assertDoesNotExist()
+        assertFalse(core.calls.any { it.first == "player_play_tracks" })
+
+        core.failFavoritePage = true
+        core.favoriteGate = CompletableDeferred()
+        compose.onNodeWithTag("catalog-shuffle").performClick()
+        core.favoriteGate!!.complete(Unit)
+        compose.waitUntil(5000) { model.failedPagePlayback.value != null }
+        compose.onNodeWithText("请求超时，请重试。").assertIsDisplayed()
+        capture("p1-playlist-retry")
+        core.failFavoritePage = false
+        compose.onNodeWithText("重试").performClick()
+        compose.waitUntil(5000) { core.calls.any { it.first == "player_play_tracks" } }
+        val request = core.calls.single { it.first == "player_play_tracks" }.second.getJSONObject("request")
+        assertTrue(request.getBoolean("shuffle"))
+        assertEquals(7, request.getJSONArray("tracks").length())
+    }
+
     @Test fun searchAndLibraryRestoreTheirOwnDestinationAndScrollWithoutReloading() {
         install()
         compose.onNodeWithTag("nav-search").performClick()
@@ -68,6 +97,11 @@ class NativeExperienceUiTest {
         capture("ux-home")
         compose.onNodeWithTag("open-settings").performClick()
         compose.onNodeWithTag("settings-list").assertIsDisplayed()
+        compose.onNodeWithTag("settings-concurrent-playback").assertIsOff().performClick().assertIsOn()
+        compose.runOnIdle {
+            assertTrue(NativePreferenceStore(compose.activity.getSharedPreferences("native-ui", 0)).state.value.allowConcurrentPlayback)
+        }
+        compose.onNodeWithTag("settings-concurrent-playback").performClick().assertIsOff()
         compose.onNodeWithText("音乐爱好者").assertDoesNotExist()
         compose.onNodeWithText("退出登录").assertDoesNotExist()
         assertFalse(core.calls.any { it.first == "provider_cache_stats" })
@@ -189,6 +223,8 @@ class NativeExperienceUiTest {
         var playlistGate: CompletableDeferred<Unit>? = null
         var failPlaylist = false
         var failPlayback = false
+        var favoriteGate: CompletableDeferred<Unit>? = null
+        var failFavoritePage = false
         private val artwork = InstrumentationRegistry.getArguments().getString("uiArtwork").orEmpty()
         private fun song(index: Int): JSONObject = JSONObject().put("id", "s$index").put("title", if (index == 0) "倒数" else "歌曲 ${index + 1}")
             .put("artists", JSONArray().put(JSONObject().put("id", "artist").put("name", "G.E.M.邓紫棋")))
@@ -203,7 +239,13 @@ class NativeExperienceUiTest {
                     .put("recommendedSonglists", JSONArray().put(playlist("p1", "通勤路上的旋律")).put(playlist("p2", "安静听一会儿")))
                 "provider_account_snapshot" -> JSONObject("""{"state":"authenticated","revision":1,"profile":{"nickname":"音乐爱好者"},"capabilities":{"playlistRead":true,"favoriteRead":true,"favoriteWrite":true},"entitlement":{"tier":"super-vip","membership":"active"}}""")
                 "provider_search" -> JSONObject().put("items", JSONArray((0..59).map(::song))).put("hasMore", false)
-                "provider_favorite_songs" -> JSONObject().put("items", JSONArray((0..3).map(::song))).put("total", 4).put("authRevision", 1)
+                "provider_favorite_songs" -> {
+                    val more = !params.isNull("cursor")
+                    if (more) { favoriteGate?.await(); if (failFavoritePage) throw CoreFailure("timeout", "") }
+                    JSONObject().put("items", JSONArray((if (more) 4..6 else 0..3).map(::song))).put("authRevision", 1)
+                        .put("total", if (favoriteGate == null) 4 else 7)
+                        .put("nextCursor", if (!more && favoriteGate != null) "next" else JSONObject.NULL)
+                }
                 "provider_playlist" -> { playlistGate?.await(); if (failPlaylist) throw CoreFailure("timeout", ""); playlist("p1", "通勤路上的旋律").put("tracks", JSONArray((0..3).map(::song))) }
                 "player_play_tracks" -> { if (failPlayback) throw CoreFailure("timeout", ""); snapshot() }
                 "provider_song" -> song(1)

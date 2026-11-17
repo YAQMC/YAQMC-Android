@@ -68,6 +68,10 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     val failedCard = _failedCard.asStateFlow()
     private var preparingCardJob: Job? = null
     private var preparationSerial = 0L
+    private val _preparingPage = MutableStateFlow(false)
+    val preparingPage = _preparingPage.asStateFlow()
+    private val _failedPagePlayback = MutableStateFlow<Pair<Boolean, NativeText>?>(null)
+    val failedPagePlayback = _failedPagePlayback.asStateFlow()
     private val _queueBusy = MutableStateFlow(false)
     val queueBusy = _queueBusy.asStateFlow()
     private var continuationNotificationRevision = 0L
@@ -234,6 +238,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     fun navigate(next: NativeRoute, root: Boolean = false) {
         if (next == _route.value && !root) return
+        cancelPlaybackPreparation()
         val nextRoot = selectedRoot(next.kind).takeIf { it in nativeRootDestinations }
         if (nextRoot != null && nextRoot != _selectedRoot.value) {
             rootStates[_selectedRoot.value] = NativeRootState(_route.value, backStack.toList())
@@ -252,6 +257,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
             if (_route.value.kind != kind) navigate(backStack.firstOrNull { it.kind == kind } ?: NativeRoute(kind), root = true)
             return
         }
+        cancelPlaybackPreparation()
         rootStates[_selectedRoot.value] = NativeRootState(_route.value, backStack.toList())
         val saved = rootStates[kind]
         _selectedRoot.value = kind
@@ -265,6 +271,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     fun back(): Boolean {
         val previous = backStack.removeLastOrNull() ?: return false
+        cancelPlaybackPreparation()
         _route.value = previous
         selectedRoot(previous.kind).takeIf { it in nativeRootDestinations }?.let { _selectedRoot.value = it }
         pageNumber = 1
@@ -283,6 +290,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     fun artistTab(tab: String) {
         if (_route.value.kind != "artist" || tab !in setOf("top", "song", "album") || tab == _route.value.tab) return
+        cancelPlaybackPreparation()
         _route.value = _route.value.copy(tab = tab)
         load()
     }
@@ -291,6 +299,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     fun load(refresh: Boolean = false, more: Boolean = false, keepContent: Boolean = false) {
         if (more && (_page.value.loading || _page.value.loadingMore || !_page.value.page.hasMore)) return
+        if (refresh && _preparingPage.value) cancelPlaybackPreparation()
         pageJob?.cancel()
         val target = _route.value
         if (target.kind in setOf("library", "account", "settings", "storage-settings", "lyric-settings", "lyric-presets", "appearance-settings", "player", "queue", "statistics", "diagnostics", "about", "issue-report")) return
@@ -356,7 +365,10 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         }
     }
 
-    fun command(method: String, params: JSONObject = JSONObject()) = action { executeCommand(method, params) }
+    fun command(method: String, params: JSONObject = JSONObject()): Job {
+        if (org.yaqmc.android.media.PlaybackService.isPlaybackStartMethod(method) || method in setOf("player_pause", "player_stop")) cancelPlaybackPreparation()
+        return action { executeCommand(method, params) }
+    }
 
     private suspend fun executeCommand(method: String, params: JSONObject) {
         val result = core.invoke(method, params)
@@ -399,7 +411,55 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     fun play(tracks: List<Track>, start: Track? = tracks.firstOrNull(), shuffle: Boolean? = null, continuation: String? = null): Job? {
         if (tracks.isEmpty()) return null
+        cancelPlaybackPreparation()
         return action { startTracks(tracks, start, shuffle, continuation) }
+    }
+
+    fun cancelPlaybackPreparation() {
+        ++preparationSerial
+        preparingCardJob?.cancel()
+        preparingCardJob = null
+        _preparingCard.value = null
+        _failedCard.value = null
+        _preparingPage.value = false
+        _failedPagePlayback.value = null
+    }
+
+    fun playPage(tracks: List<Track>, shuffle: Boolean) {
+        val target = route.value
+        if (target.kind !in setOf("favorites", "account-playlist", "playlist")) { play(tracks, shuffle = shuffle); return }
+        if (_preparingPage.value) return
+        cancelPlaybackPreparation()
+        val serial = preparationSerial
+        _preparingPage.value = true
+        preparingCardJob = action {
+            try {
+                val all = completePlaybackTracks(target)
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (all.isEmpty()) notify(R.string.native_empty)
+                else startTracks(all, shuffle = shuffle)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                if (serial == preparationSerial) _failedPagePlayback.value = shuffle to errorText(error, R.string.native_playlist_play_failed)
+            } finally {
+                if (serial == preparationSerial) _preparingPage.value = false
+            }
+        }
+    }
+
+    private suspend fun completePlaybackTracks(target: NativeRoute): List<Track> {
+        val accountPage = target.kind in setOf("favorites", "account-playlist")
+        if (accountPage) {
+            if (!account.value.authenticated) throw CoreFailure("authentication-expired", "")
+            if (!account.value.canRead(target.kind)) throw CoreFailure("unsupported-operation", "")
+        }
+        val revision = account.value.revision
+        val tracks = catalog.playbackTracks(target, if (accountPage) revision else null)
+        if (accountPage) {
+            refreshAccount()
+            if (revision != account.value.revision || !account.value.authenticated) throw CoreFailure("authentication-expired", "")
+        }
+        return tracks
     }
 
     private suspend fun startTracks(tracks: List<Track>, start: Track? = tracks.firstOrNull(), shuffle: Boolean? = null, continuation: String? = null) {
@@ -416,20 +476,20 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     fun playCard(item: CatalogItem) {
         if (_preparingCard.value == item.playbackKey) return
-        val serial = ++preparationSerial
-        preparingCardJob?.cancel()
-        _failedCard.value = null
+        cancelPlaybackPreparation()
+        val serial = preparationSerial
         _preparingCard.value = item.playbackKey
         preparingCardJob = action {
             try {
-                val page = when {
+                val tracks = when {
+                    item.kind == "account-playlist" -> completePlaybackTracks(NativeRoute(item.kind, item.id, playlist = item.json.toString()))
                     item.json.optJSONArray("tracks") != null -> NativeModels.detail(item.kind, item.json)
-                    item.kind == "account-playlist" -> catalog.load(NativeRoute(item.kind, item.id, playlist = item.json.toString()), false, 1, null)
-                    else -> catalog.load(NativeRoute(item.kind, item.id), false, 1, null)
+                        .tracks
+                    else -> completePlaybackTracks(NativeRoute(item.kind, item.id))
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                if (page.tracks.isEmpty()) notify(R.string.native_empty)
-                else startTracks(page.tracks, continuation = item.continuation)
+                if (tracks.isEmpty()) notify(R.string.native_empty)
+                else startTracks(tracks, continuation = item.continuation)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -582,6 +642,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     fun setTheme(value: String) = preferenceStore.setTheme(value)
     fun setLanguage(value: String) = preferenceStore.setLanguage(value)
+    fun setAllowConcurrentPlayback(value: Boolean) = preferenceStore.setAllowConcurrentPlayback(value)
     fun setLyrics(value: NativeLyricPreferences) = preferenceStore.setLyrics(value)
     fun setAppearance(value: NativeAppearancePreferences) = preferenceStore.setAppearance(value)
     fun setLyricPresets(value: NativeLyricPresetPreferences) = preferenceStore.setLyricPresets(value)
@@ -593,6 +654,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         val value = core.objectResult("provider_account_snapshot", provider())
         val next = AccountUi.parse(value)
         if (next.revision != _account.value.revision || next.authenticated != _account.value.authenticated) {
+            cancelPlaybackPreparation()
             favoriteAuthorityJob?.cancel()
             favoriteAuthorityRevision = null
             favoriteMutationVersions.clear()
@@ -915,6 +977,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
             "audio.focus" -> R.string.native_audio_focus
             "native.share.invalid" -> R.string.native_share_unavailable
             "native.share.public" -> R.string.native_share_public_unavailable
+            "native.playlist.incomplete" -> R.string.native_playlist_play_failed
             else -> null
         }
         return NativeText(resource ?: fallback)
