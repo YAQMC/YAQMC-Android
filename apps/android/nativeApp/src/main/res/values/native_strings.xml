@@ -186,7 +186,6 @@
     <string name="native_confirm_remove_current">Remove “%1$s” from this playlist?</string>
     <string name="native_no_writable_playlists">No writable owned playlists are available.</string>
     <string name="native_stale">Refresh for the latest content</string>
-    <string name="native_loaded_total">Loaded: %1$d / %2$d</string>
     <string name="native_clear_search">Clear search</string>
     <string name="native_play_card">Play %1$s</string>
     <string name="native_timeout">Request timed out. Please retry.</string>

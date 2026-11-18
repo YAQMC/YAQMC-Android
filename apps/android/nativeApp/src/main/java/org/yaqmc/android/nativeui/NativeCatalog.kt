@@ -103,7 +103,6 @@ internal fun Catalog(model: NativeViewModel, route: NativeRoute, share: (Track) 
                 Text(stringResource(R.string.native_stale), color = MaterialTheme.colorScheme.tertiary)
                 TextButton(onClick = { model.load(refresh = true) }) { Text(stringResource(R.string.native_refresh)) }
             }
-            if (route.kind != "favorites") page.total?.let { total -> item { Text(stringResource(R.string.native_loaded_total, visibleTracks.size.takeIf { it > 0 } ?: sections.sumOf { it.cards.size }, total)) } }
             sections.forEachIndexed { sectionIndex, section ->
                 if (route.kind != "search" && (activeTab.isBlank() || section.tab != activeTab || section.continuation != null)) item("heading-$sectionIndex") {
                     Row(verticalAlignment = Alignment.CenterVertically) {

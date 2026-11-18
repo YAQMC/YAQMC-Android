@@ -186,7 +186,6 @@
     <string name="native_confirm_remove_current">从该歌单移除“%1$s”？</string>
     <string name="native_no_writable_playlists">暂无可写入的自建歌单。</string>
     <string name="native_stale">刷新获取最新内容</string>
-    <string name="native_loaded_total">已加载：%1$d / %2$d</string>
     <string name="native_clear_search">清空搜索</string>
     <string name="native_play_card">播放 %1$s</string>
     <string name="native_timeout">请求超时，请重试。</string>
