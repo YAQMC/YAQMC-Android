@@ -349,7 +349,7 @@ internal fun NativePluginStore(model: NativeViewModel) {
                 release.optJSONArray("assets").objects().forEach { asset ->
                     TextButton(enabled = !state.busy, onClick = {
                         model.plugins.prepareUpdate(JSONObject().put("github", JSONObject().put("owner", page.text("owner")).put("repo", page.text("repo")).put("releaseId", release.optLong("id")).put("assetId", asset.optLong("id"))))
-                        model.navigate(NativeRoute("plugins"))
+                        model.back()
                     }) { Text(asset.text("name")) }
                 }
             }

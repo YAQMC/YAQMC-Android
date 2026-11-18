@@ -56,7 +56,7 @@ internal fun Library(model: NativeViewModel) {
         }
         contributions.optJSONArray("navigation").objects().forEach { entry -> item("plugin-nav-${entry.text("pluginId")}-${entry.text("id")}") {
             NativeSettingRow(entry.text("label"), stringResource(R.string.native_plugin_by, entry.text("pluginName")), "plugin-navigation-${entry.text("id")}") {
-                model.navigate(NativeRoute("plugin-page", id = entry.text("pageId"), pluginId = entry.text("pluginId")))
+                model.navigate(NativeRoute("plugin-page", id = entry.text("pageId"), providerId = route.providerId, profileId = route.profileId, pluginId = entry.text("pluginId")))
             }
         } }
         item { NativePluginActions(model, "sidebar") }

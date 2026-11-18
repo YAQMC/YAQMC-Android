@@ -29,23 +29,26 @@ class NativeExperienceUiTest {
     private lateinit var model: NativeViewModel
     @After fun close() { compose.runOnIdle { if (::model.isInitialized) model.viewModelScope.cancel() } }
 
-    @Test fun fullPlaylistPlaybackShowsLoadingCancellationAndRetry() {
+    @Test fun fullPlaylistPlaybackSupportsCancellationAndRetryWithoutProgressBar() {
         install()
         compose.runOnIdle { model.navigate(NativeRoute("favorites")) }
         compose.waitUntil(5000) { model.page.value.loaded && model.page.value.page.tracks.size == 4 }
         core.favoriteGate = CompletableDeferred()
         compose.onNodeWithTag("catalog-play-all").performClick()
-        compose.onNodeWithTag("catalog-playback-loading").assertIsDisplayed()
+        val catalogProgress = hasAnyAncestor(hasTestTag("catalog-list")) and
+            SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo)
+        compose.onNode(catalogProgress).assertDoesNotExist()
         compose.onNodeWithTag("catalog-play-all").assertIsNotEnabled()
         compose.onNodeWithTag("catalog-shuffle").assertIsNotEnabled()
-        capture("p1-playlist-loading")
+        capture("playlist-preparation")
         compose.onNodeWithText("取消").performClick()
-        compose.onNodeWithTag("catalog-playback-loading").assertDoesNotExist()
+        compose.onNodeWithText("取消").assertDoesNotExist()
         assertFalse(core.calls.any { it.first == "player_play_tracks" })
 
         core.failFavoritePage = true
         core.favoriteGate = CompletableDeferred()
         compose.onNodeWithTag("catalog-shuffle").performClick()
+        compose.onNode(catalogProgress).assertDoesNotExist()
         core.favoriteGate!!.complete(Unit)
         compose.waitUntil(5000) { model.failedPagePlayback.value != null }
         compose.onNodeWithText("请求超时，请重试。").assertIsDisplayed()
@@ -56,6 +59,33 @@ class NativeExperienceUiTest {
         val request = core.calls.single { it.first == "player_play_tracks" }.second.getJSONObject("request")
         assertTrue(request.getBoolean("shuffle"))
         assertEquals(7, request.getJSONArray("tracks").length())
+    }
+
+    @Test fun pluginBackReturnsToTheOwningPage() {
+        install()
+        compose.onNodeWithTag("open-settings").performClick()
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-plugins"))
+        compose.onNodeWithTag("settings-plugins").performClick()
+        compose.onNodeWithText("查找插件").performClick()
+        compose.onNodeWithTag("plugin-store").assertIsDisplayed()
+        compose.onNodeWithContentDescription("返回").performClick()
+        compose.onNodeWithTag("plugins-list").assertIsDisplayed()
+
+        compose.onNodeWithText("查找插件").performClick()
+        val store = compose.onNodeWithTag("plugin-store")
+        store.performScrollToNode(hasText("fixtures/example"))
+        compose.onNodeWithText("fixtures/example").performClick()
+        store.performScrollToNode(hasText("example.yaqmc-plugin"))
+        compose.onNodeWithText("example.yaqmc-plugin").performClick()
+        compose.onNodeWithTag("plugins-list").assertIsDisplayed()
+        compose.waitUntil(5000) { core.calls.any { it.first == "plugin_update_prepare" } }
+        compose.onNodeWithContentDescription("返回").performClick()
+        compose.onNodeWithTag("settings-list").assertIsDisplayed()
+
+        compose.runOnIdle { model.navigate(NativeRoute("plugin-page", id = "fixture", pluginId = "fixture")) }
+        compose.onNodeWithTag("plugin-page").assertIsDisplayed()
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.onNodeWithTag("library-list").assertIsDisplayed()
     }
 
     @Test fun searchAndLibraryRestoreTheirOwnDestinationAndScrollWithoutReloading() {
@@ -239,6 +269,8 @@ class NativeExperienceUiTest {
                     .put("recommendedSonglists", JSONArray().put(playlist("p1", "通勤路上的旋律")).put(playlist("p2", "安静听一会儿")))
                 "provider_account_snapshot" -> JSONObject("""{"state":"authenticated","revision":1,"profile":{"nickname":"音乐爱好者"},"capabilities":{"playlistRead":true,"favoriteRead":true,"favoriteWrite":true},"entitlement":{"tier":"super-vip","membership":"active"}}""")
                 "provider_search" -> JSONObject().put("items", JSONArray((0..59).map(::song))).put("hasMore", false)
+                "plugin_store_search" -> JSONObject("""{"items":[{"fullName":"fixtures/example","owner":"fixtures","repo":"example"}]}""")
+                "plugin_store_releases" -> JSONObject("""{"owner":"fixtures","repo":"example","releases":[{"id":1,"tagName":"v1","assets":[{"id":2,"name":"example.yaqmc-plugin"}]}]}""")
                 "provider_favorite_songs" -> {
                     val more = !params.isNull("cursor")
                     if (more) { favoriteGate?.await(); if (failFavoritePage) throw CoreFailure("timeout", "") }

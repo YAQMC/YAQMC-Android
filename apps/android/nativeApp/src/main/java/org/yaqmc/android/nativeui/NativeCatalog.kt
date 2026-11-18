@@ -92,10 +92,7 @@ internal fun Catalog(model: NativeViewModel, route: NativeRoute, share: (Track) 
                     OutlinedButton(onClick = { model.playPage(visibleTracks, shuffle = true) }, enabled = !preparingPlayback, modifier = Modifier.testTag("catalog-shuffle")) { Text(stringResource(R.string.native_shuffle)) }
                     OutlinedButton(onClick = { model.addTracks(visibleTracks) }) { Text(stringResource(R.string.native_add_queue)) }
                 }
-                if (preparingPlayback) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth().testTag("catalog-playback-loading"))
-                    TextButton(onClick = model::cancelPlaybackPreparation) { Text(stringResource(R.string.native_cancel)) }
-                }
+                if (preparingPlayback) TextButton(onClick = model::cancelPlaybackPreparation) { Text(stringResource(R.string.native_cancel)) }
                 failedPlayback?.let { (shuffle, error) -> ErrorRetry(error, { model.playPage(visibleTracks, shuffle) }) }
             }
             state.error?.let { error -> item { ErrorRetry(error, { model.load(refresh = true) }) } }

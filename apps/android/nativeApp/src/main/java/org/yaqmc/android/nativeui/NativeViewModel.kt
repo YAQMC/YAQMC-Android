@@ -302,7 +302,24 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     }
 
     fun back(): Boolean {
-        val previous = backStack.removeLastOrNull() ?: return false
+        val parentKind = when (_route.value.kind) {
+            "plugins" -> "settings"
+            "plugin-store" -> "plugins"
+            "plugin-page" -> "library"
+            else -> null
+        }
+        val previous = if (parentKind == null) {
+            backStack.removeLastOrNull() ?: return false
+        } else {
+            val parentIndex = backStack.indexOfLast { it.kind == parentKind }
+            if (parentIndex >= 0) {
+                backStack[parentIndex].also { backStack.subList(parentIndex, backStack.size).clear() }
+            } else {
+                if (parentKind == "library") backStack.clear()
+                else backStack.removeAll { it.kind in setOf("plugins", "plugin-store", "plugin-page") }
+                scopedRoute(parentKind)
+            }
+        }
         cancelPlaybackPreparation()
         _route.value = previous
         selectedRoot(previous.kind).takeIf { it in nativeRootDestinations }?.let { _selectedRoot.value = it }
