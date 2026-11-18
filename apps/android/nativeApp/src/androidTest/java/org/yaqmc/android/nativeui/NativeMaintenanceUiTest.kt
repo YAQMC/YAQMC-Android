@@ -198,8 +198,8 @@ class NativeMaintenanceUiTest {
     @Test fun cacheFailureStopsLoadingAndRetryRetainsPreviousCounts() {
         var fail = true
         respond = { method, _ -> when (method) {
-            "provider_cache_stats" -> if (fail) throw CoreFailure("timeout", "") else JSONObject("""{"totalBytes":2048,"mediaEntries":3}""")
-            "provider_clear_cache" -> throw CoreFailure("timeout", "")
+            "app_cache_stats" -> if (fail) throw CoreFailure("timeout", "") else JSONObject("""{"totalBytes":2048,"mediaEntries":3}""")
+            "app_clear_cache" -> throw CoreFailure("timeout", "")
             else -> JSONObject()
         } }
         install("storage-settings")

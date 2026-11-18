@@ -15,16 +15,17 @@ internal class MobileLoginLeaseRegistry(
         val deadlineMs: Long,
     )
 
-    private val attempts = mutableMapOf<String, Attempt>()
-    private val tasks = mutableMapOf<String, Runnable>()
+    private val attempts = mutableMapOf<Pair<String, String>, Attempt>()
+    private val tasks = mutableMapOf<Pair<String, String>, Runnable>()
+    private fun key(attempt: Attempt) = attempt.providerId to attempt.attemptId
 
     fun hasProvider(providerId: String) = attempts.values.any { it.providerId == providerId }
 
     fun adopt(attempt: Attempt) {
-        val current = attempts[attempt.attemptId]
+        val current = attempts[key(attempt)]
         if (current != null && current.ownerLeaseId == attempt.ownerLeaseId) return
         attempts.values.filter { it.providerId == attempt.providerId }.toList().forEach(::stop)
-        attempts[attempt.attemptId] = attempt
+        attempts[key(attempt)] = attempt
         event(attempt, "owner-attached", null)
         enqueue(attempt, 0)
     }
@@ -34,15 +35,15 @@ internal class MobileLoginLeaseRegistry(
     }
 
     private fun enqueue(attempt: Attempt, delay: Long) {
-        if (attempts[attempt.attemptId] !== attempt) return
-        tasks.remove(attempt.attemptId)?.let(unschedule)
+        if (attempts[key(attempt)] !== attempt) return
+        tasks.remove(key(attempt))?.let(unschedule)
         val task = Runnable { renew(attempt) }
-        tasks[attempt.attemptId] = task
+        tasks[key(attempt)] = task
         schedule(task, delay)
     }
 
     private fun renew(attempt: Attempt) {
-        if (attempts[attempt.attemptId] !== attempt) return
+        if (attempts[key(attempt)] !== attempt) return
         if (now() >= attempt.deadlineMs) {
             event(attempt, "owner-deadline", null)
             stop(attempt)
@@ -50,7 +51,7 @@ internal class MobileLoginLeaseRegistry(
         }
         heartbeat(attempt) { state, id, lease ->
             // A response queued before a retry must never revive the previous owner.
-            if (attempts[attempt.attemptId] !== attempt) return@heartbeat
+            if (attempts[key(attempt)] !== attempt) return@heartbeat
             if (state == null) {
                 enqueue(attempt, 1_000)
             } else if (state in ACTIVE_STATES && id == attempt.attemptId && lease == attempt.ownerLeaseId) {
@@ -63,9 +64,9 @@ internal class MobileLoginLeaseRegistry(
     }
 
     private fun stop(attempt: Attempt) {
-        if (attempts[attempt.attemptId] !== attempt) return
-        attempts.remove(attempt.attemptId)
-        tasks.remove(attempt.attemptId)?.let(unschedule)
+        if (attempts[key(attempt)] !== attempt) return
+        attempts.remove(key(attempt))
+        tasks.remove(key(attempt))?.let(unschedule)
     }
 
     companion object {

@@ -13,19 +13,20 @@ internal fun JSONArray?.objects(): List<JSONObject> =
 internal data class Track(val json: JSONObject) {
     val id: String = json.text("id")
     val providerId: String = json.optJSONObject("provider")?.text("providerId", "qqmusic") ?: "qqmusic"
+    val profileId: String = json.optJSONObject("provider")?.text("profileId", "default") ?: "default"
     val title: String = json.text("title")
     val artists: String = json.optJSONArray("artists").objects().joinToString(" / ") { it.text("name") }
     val album: String = json.optJSONObject("album")?.text("title").orEmpty()
     val artwork: String = json.optJSONObject("artwork")?.text("src").orEmpty()
     val duration: Long = json.optLong("durationMs")
     val favorite: Boolean = json.optBoolean("isFavorite")
-    val key: String = "$providerId:$id"
-    val artistLinks: List<EntityLink> = json.optJSONArray("artists").objects().map { EntityLink("artist", it.text("id"), it.text("name")) }
-    val albumLink: EntityLink? = json.optJSONObject("album")?.let { EntityLink("album", it.text("id"), it.text("title")) }
-    val writable: Boolean = json.optJSONObject("provider")?.let { it.text("providerId") == "qqmusic" && it.text("trackId").isNotBlank() } == true
+    val key: String = if (profileId == "default") "$providerId:$id" else "$providerId:$profileId:$id"
+    val artistLinks: List<EntityLink> = json.optJSONArray("artists").objects().map { EntityLink("artist", it.text("id"), it.text("name"), providerId, profileId) }
+    val albumLink: EntityLink? = json.optJSONObject("album")?.let { EntityLink("album", it.text("id"), it.text("title"), providerId, profileId) }
+    val writable: Boolean = json.optJSONObject("provider")?.text("trackId")?.isNotBlank() == true
 }
 
-internal data class EntityLink(val kind: String, val id: String, val title: String)
+internal data class EntityLink(val kind: String, val id: String, val title: String, val providerId: String = "qqmusic", val profileId: String = "default")
 
 internal data class CatalogItem(
     val kind: String,
@@ -33,9 +34,11 @@ internal data class CatalogItem(
     val subtitleText: NativeText? = null,
     val titleText: NativeText? = null,
     val continuation: String? = null,
+    val providerId: String = "",
+    val profileId: String = "default",
 ) {
     val id: String = json.text("id", json.text("encArea"))
-    val playbackKey: String = "$kind:$id"
+    val playbackKey: String = if (providerId.isBlank() || (providerId == "qqmusic" && profileId == "default")) "$kind:$id" else "$providerId:$profileId:$kind:$id"
     val title: String = json.text("title", json.text("name"))
     val artwork: String = json.optJSONObject("artwork")?.text("src") ?: json.text("cover")
     val subtitle: String = json.optJSONObject("artist")?.text("name")
@@ -50,6 +53,7 @@ internal data class FeedSection(
     val tracks: List<Track> = emptyList(),
     val tab: String = "",
     val continuation: String? = null,
+    val layoutKey: String = "",
 )
 
 internal data class CatalogTab(val id: String, val title: NativeText)
@@ -86,9 +90,9 @@ internal object NativeModels {
                     continuation = if (key == "guessSonglist") "guess" else null)
             }
         }
-        sections += FeedSection(NativeText(R.string.native_for_you), personal)
-        sections += FeedSection(value.text("radarBasedOnSong").takeIf(String::isNotBlank)?.let { NativeText(R.string.native_radar_based_on, it) } ?: NativeText(R.string.native_radar), tracks = tracks(value.optJSONArray("radarSongs")), continuation = "radar")
-        sections += FeedSection(NativeText(R.string.native_recommended_playlists), cards(value.optJSONArray("recommendedSonglists"), "playlist"))
+        sections += FeedSection(NativeText(R.string.native_for_you), personal, layoutKey = "for-you")
+        sections += FeedSection(value.text("radarBasedOnSong").takeIf(String::isNotBlank)?.let { NativeText(R.string.native_radar_based_on, it) } ?: NativeText(R.string.native_radar), tracks = tracks(value.optJSONArray("radarSongs")), continuation = "radar", layoutKey = "radar")
+        sections += FeedSection(NativeText(R.string.native_recommended_playlists), cards(value.optJSONArray("recommendedSonglists"), "playlist"), layoutKey = "recommended-playlists")
         sections += FeedSection(NativeText(R.string.native_made_for_you), cards(value.optJSONArray("madeForYou"), "playlist"))
         sections += FeedSection(NativeText(R.string.native_new_albums), cards(value.optJSONArray("newReleases"), "album"))
         sections += FeedSection(NativeText(R.string.native_recent), value.optJSONArray("recentlyPlayed").objects().mapNotNull {

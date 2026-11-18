@@ -28,8 +28,8 @@ internal class NativeCatalogRepository(private val request: suspend (String, JSO
     }
 
     suspend fun load(target: NativeRoute, refresh: Boolean, number: Int, cursor: String?): CatalogPage {
-        fun provider() = JSONObject().put("providerId", "qqmusic")
-        return when (target.kind) {
+        fun provider() = JSONObject().put("providerId", target.providerId).put("profileId", target.profileId)
+        val page = when (target.kind) {
             "home" -> NativeModels.home(request("provider_home", provider().put("refresh", refresh)))
             "discover" -> NativeModels.discover(request("provider_discover", provider().put("refresh", refresh)))
             "search" -> if (target.query.isBlank()) {
@@ -84,5 +84,9 @@ internal class NativeCatalogRepository(private val request: suspend (String, JSO
             }
             else -> NativeModels.detail(target.kind, request("provider_${target.kind}", provider().put(if (target.kind == "area") "encArea" else "id", target.id)))
         }
+        return page.copy(
+            sections = page.sections.map { section -> section.copy(cards = section.cards.map { it.copy(providerId = target.providerId, profileId = target.profileId) }) },
+            links = page.links.map { it.copy(providerId = target.providerId, profileId = target.profileId) },
+        )
     }
 }

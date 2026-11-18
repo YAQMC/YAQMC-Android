@@ -50,6 +50,20 @@ class OAuthActivity : ComponentActivity() {
     private var loadError: View? = null
     private var retryUrl: String? = null
     private var finished = false
+    private var browserSession: OAuthBrowserSession? = null
+    private val sessionHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val inspectSession = object : Runnable {
+        override fun run() {
+            if (finished || isDestroyed || isFinishing) return
+            val policy = browserSession ?: return
+            val cookies = policy.capture(CookieManager.getInstance().getCookie(policy.url))
+            if (cookies != null) {
+                finished = true
+                setResult(RESULT_OK, Intent().setData(Uri.parse(policy.url)).putExtra(EXTRA_BROWSER_SESSION_COOKIES, cookies.toString()))
+                finishAndClean()
+            } else sessionHandler.postDelayed(this, 500)
+        }
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         intent.getStringExtra(EXTRA_LANGUAGE)?.takeIf { it in setOf("zh-CN", "en-US") }?.let { language ->
             applyOverrideConfiguration(Configuration().apply { setLocale(Locale.forLanguageTag(language)) })
@@ -67,6 +81,9 @@ class OAuthActivity : ComponentActivity() {
             return
         }
         callbackPrefix = intent.getStringExtra(EXTRA_CALLBACK_PREFIX).orEmpty()
+        val session = intent.getStringExtra(EXTRA_BROWSER_SESSION)
+        browserSession = OAuthBrowserSession.parse(session)
+        if (session != null && browserSession == null) { cancel(); return }
         val presentedUrl = OAuthUrlPolicy.selectPresentationUrl(
             intent.getStringExtra(EXTRA_URL),
             intent.getStringExtra(EXTRA_MOBILE_URL),
@@ -122,7 +139,7 @@ class OAuthActivity : ComponentActivity() {
                     return
                 }
                 val uri = Uri.parse(href)
-                if (OAuthUrlPolicy.matchesCallback(href, callbackPrefix)) {
+                if (browserSession == null && OAuthUrlPolicy.matchesCallback(href, callbackPrefix)) {
                     handleNavigation(uri, true)
                     return
                 }
@@ -138,6 +155,7 @@ class OAuthActivity : ComponentActivity() {
 
             override fun onPageFinished(view: WebView, url: String?) {
                 updateBackButton(view)
+                if (browserSession != null) { sessionHandler.removeCallbacks(inspectSession); sessionHandler.post(inspectSession) }
             }
 
             override fun onReceivedError(
@@ -157,12 +175,17 @@ class OAuthActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        sessionHandler.removeCallbacksAndMessages(null)
         cleanWebView()
         super.onDestroy()
     }
 
     private fun handleNavigation(uri: Uri, isForMainFrame: Boolean): Boolean {
-        if (OAuthUrlPolicy.matchesCallback(uri.toString(), callbackPrefix)) {
+        if (browserSession != null && uri.scheme == "http") {
+            val secure = uri.buildUpon().scheme("https").build().toString()
+            if (OAuthUrlPolicy.matchesAllowlist(secure, navigationAllowlist)) { webView?.loadUrl(secure); return true }
+        }
+        if (browserSession == null && OAuthUrlPolicy.matchesCallback(uri.toString(), callbackPrefix)) {
             if (!finished) {
                 finished = true
                 setResult(RESULT_OK, Intent().setData(uri))
@@ -403,6 +426,7 @@ class OAuthActivity : ComponentActivity() {
     }
 
     private fun cleanWebView() {
+        sessionHandler.removeCallbacksAndMessages(null)
         webView?.let { browser ->
             (browser.parent as? ViewGroup)?.removeView(browser)
             browser.apply {
@@ -432,6 +456,8 @@ class OAuthActivity : ComponentActivity() {
         const val EXTRA_EXTERNAL_NAVIGATION_RULES =
             "org.yaqmc.android.oauth.external_navigation_rules"
         const val EXTRA_CALLBACK_PREFIX = "org.yaqmc.android.oauth.callback_prefix"
+        const val EXTRA_BROWSER_SESSION = "org.yaqmc.android.oauth.browser_session"
+        const val EXTRA_BROWSER_SESSION_COOKIES = "org.yaqmc.android.oauth.browser_session_cookies"
     }
 }
 

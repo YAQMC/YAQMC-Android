@@ -24,6 +24,14 @@ class DeepLinkManagerTest {
     }
 
     @Test
+    fun preservesPluginProfileAndRejectsAmbiguousScopes() {
+        assertEquals(CatalogSongDeepLink("plugin.source", "song:one", "local-2"), DeepLinkManager.parse("yaqmc://catalog/plugin.source/song?id=song%3Aone&profileId=local-2"))
+        assertNull(DeepLinkManager.parse("yaqmc://catalog/plugin.source/song?id=a&profileId=first&profileId=second"))
+        assertNull(DeepLinkManager.parse("yaqmc://catalog/plugin.source/song?id=a&profileId=../other"))
+        assertNull(DeepLinkManager.parse("yaqmc://catalog/plugin.source/song?id=a&extra=b"))
+    }
+
+    @Test
     fun eachIntentIdentityIsConsumedOnce() {
         val manager = DeepLinkManager()
         val first = Any()

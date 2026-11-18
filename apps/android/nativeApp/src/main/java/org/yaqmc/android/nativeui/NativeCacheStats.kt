@@ -2,12 +2,13 @@ package org.yaqmc.android.nativeui
 
 import org.json.JSONObject
 
-/** Direct projection of provider_cache_stats; bytes and entry counts are never rounded in storage. */
+/** Direct projection of app_cache_stats, including shared Wasm compilation artifacts. */
 internal data class NativeCacheStats(
     val totalBytes: Long, val mediaBytes: Long, val artworkBytes: Long,
     val mediaEntries: Long, val artworkEntries: Long,
     val metadataEntries: Long, val lyricEntries: Long,
     val mediaLimitBytes: Long, val artworkLimitBytes: Long,
+    val componentBytes: Long = 0, val componentEntries: Long = 0,
 ) {
     companion object {
         fun parse(value: JSONObject): NativeCacheStats {
@@ -17,6 +18,7 @@ internal data class NativeCacheStats(
                 count("mediaEntries"), count("artworkEntries"),
                 count("metadataEntries"), count("lyricEntries"),
                 count("mediaLimitBytes"), count("artworkLimitBytes"),
+                count("componentBytes"), count("componentEntries"),
             )
         }
     }

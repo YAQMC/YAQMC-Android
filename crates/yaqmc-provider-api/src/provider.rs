@@ -122,6 +122,18 @@ pub trait ProviderAccount: Send + Sync {
         attempt_id: &str,
         callback_url: reqwest::Url,
     ) -> ProviderResult<AccountSnapshot>;
+    async fn complete_browser_session_login(
+        &self,
+        _attempt_id: &str,
+        _callback_url: reqwest::Url,
+        _cookies: Vec<crate::BrowserSessionCookie>,
+    ) -> ProviderResult<AccountSnapshot> {
+        Err(crate::ProviderCommandError {
+            code: "unsupported-operation".to_owned(),
+            message: "this provider does not support browser session login".to_owned(),
+            retryable: false,
+        })
+    }
     async fn cancel_oauth_login(&self, attempt_id: &str) -> ProviderResult<AccountSnapshot>;
     async fn heartbeat_qr_login(
         &self,
@@ -222,10 +234,22 @@ pub trait MusicProvider: PlaybackSourceResolver + ProviderAccount + Send + Sync 
     /// Stable runtime ID. The registry validates and owns a copy, so providers
     /// loaded from configuration or plugins do not require leaked static data.
     fn id(&self) -> &str;
+    /// Validated local identity of this provider instance. Legacy providers
+    /// remain attached to the compatibility `default` profile.
+    fn profile_key(&self) -> crate::ProviderProfileKey {
+        crate::ProviderProfileKey {
+            provider_id: self.id().to_owned(),
+            profile_id: crate::DEFAULT_PROFILE_ID.to_owned(),
+        }
+    }
     fn display_name(&self) -> &str {
         self.id()
     }
     fn account(&self) -> &dyn ProviderAccount;
+    /// Optional read-only comments capability for retained built-in providers.
+    fn comments_provider(&self) -> Option<&dyn crate::CommentsProvider> {
+        None
+    }
     fn media_http_client(&self) -> reqwest::Client;
     fn capabilities(&self) -> CatalogProviderCapabilities;
     async fn status(&self) -> ProviderStatus;

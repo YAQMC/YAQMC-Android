@@ -63,6 +63,10 @@ pub enum AccountPlaylistReference {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountPlaylistSummary {
+    #[serde(default = "crate::profile::default_provider_id")]
+    pub provider_id: String,
+    #[serde(default = "crate::profile::default_profile_id")]
+    pub profile_id: String,
     pub id: String,
     pub reference: AccountPlaylistReference,
     pub title: String,
@@ -86,6 +90,7 @@ pub struct AccountPlaylistDetail {
 #[serde(rename_all = "kebab-case")]
 pub enum RemotePlayHistorySource {
     QqmusicAccount,
+    ProviderAccount,
     LocalPlayback,
 }
 
@@ -101,8 +106,8 @@ pub struct RemotePlayHistoryItem {
 #[serde(rename_all = "kebab-case")]
 pub enum EntitlementTier {
     Free,
-    #[serde(alias = "music-vip")]
     GreenDiamond,
+    MusicVip,
     SuperVip,
     Unknown,
 }
@@ -302,6 +307,10 @@ pub enum AccountState {
 pub struct AccountSnapshot {
     #[serde(flatten)]
     pub account: AccountState,
+    #[serde(default = "crate::profile::default_provider_id")]
+    pub provider_id: String,
+    #[serde(default = "crate::profile::default_profile_id")]
+    pub profile_id: String,
     pub revision: u64,
     pub capabilities: AccountCapabilities,
 }
@@ -455,4 +464,57 @@ pub struct PlaylistMutationResult {
     pub playlist: Option<AccountPlaylistSummary>,
     pub error_code: Option<ProviderErrorCode>,
     pub auth_revision: u64,
+}
+
+#[cfg(test)]
+mod profile_compat_tests {
+    use super::*;
+    use crate::DEFAULT_PROFILE_ID;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_playlist_summary_and_snapshot_use_default_profile() {
+        let summary: AccountPlaylistSummary = serde_json::from_value(json!({
+            "id": "playlist-1",
+            "reference": {"kind": "owned", "tid": "tid-1"},
+            "title": "Playlist",
+            "description": "",
+            "owner": {"id": "owner-1", "displayName": "Owner"},
+            "artwork": {
+                "src": "",
+                "alt": "",
+                "dominantColor": ""
+            },
+            "ownership": "owned",
+            "capabilities": {
+                "canAddTracks": true,
+                "canRemoveTracks": true,
+                "canRename": true,
+                "canDelete": true,
+                "canReorder": true
+            },
+            "trackCount": 0,
+            "updatedAtMs": null
+        }))
+        .expect("legacy playlist summary deserializes");
+        assert_eq!(summary.provider_id, "qqmusic");
+        assert_eq!(summary.profile_id, DEFAULT_PROFILE_ID);
+
+        let snapshot: AccountSnapshot = serde_json::from_value(json!({
+            "state": "guest",
+            "profile": null,
+            "entitlement": null,
+            "revision": 1,
+            "capabilities": {
+                "qrLogin": true,
+                "favoriteRead": true,
+                "favoriteWrite": false,
+                "playlistRead": true,
+                "playlistWrite": false,
+                "recentHistoryRead": true
+            }
+        }))
+        .expect("legacy account snapshot deserializes");
+        assert_eq!(snapshot.profile_id, DEFAULT_PROFILE_ID);
+    }
 }

@@ -35,12 +35,22 @@ internal interface NativeCoreApi {
 
 @UnstableApi
 internal class NativeCore(private val context: Context) : NativeCoreApi {
-    override suspend fun invoke(method: String, params: JSONObject, host: Boolean): Any? = withCoreDeadline {
-        if (method == "player_pause" || method == "player_stop") PlaybackService.noteRendererPause()
+    override suspend fun invoke(method: String, params: JSONObject, host: Boolean): Any? = withCoreDeadline(
+        if (method in setOf("plugin_install", "plugin_install_unpacked", "plugin_store_search", "plugin_store_releases")) 120_000 else 30_000,
+    ) {
+        val playbackMethod = if (method == "plugin_bridge") when (params.optJSONObject("request")?.text("method")) {
+            "player.play" -> "player_play"; "player.pause" -> "player_pause"; "player.toggle" -> "player_toggle"
+            "player.next" -> "player_next"; "player.previous" -> "player_previous"; else -> method
+        } else method
+        if (playbackMethod != method) {
+            // Validate the opaque runtime before changing Android focus or user-pause policy.
+            invoke("plugin_runtime_authorize", JSONObject().put("token", params.getJSONObject("request").getString("token")).put("permission", "player.control"), host = true)
+        }
+        if (playbackMethod == "player_pause" || playbackMethod == "player_stop") PlaybackService.noteRendererPause()
         var prepared = false
-        if (PlaybackService.isPlaybackStartMethod(method)) {
+        if (PlaybackService.isPlaybackStartMethod(playbackMethod)) {
             prepared = suspendCancellableCoroutine { continuation ->
-                PlaybackService.prepareRendererPlayback(context, method) { allowed, didPrepare ->
+                PlaybackService.prepareRendererPlayback(context, playbackMethod) { allowed, didPrepare ->
                     if (!continuation.isActive) {
                         if (didPrepare) PlaybackService.cancelPreparedRendererPlayback()
                     } else if (allowed) continuation.resume(didPrepare)

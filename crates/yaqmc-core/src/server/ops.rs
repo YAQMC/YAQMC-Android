@@ -144,6 +144,17 @@ pub async fn assemble_diagnostics_snapshot(
         app,
     );
     snapshot.lyrics_preset = request.lyrics_preset;
+    #[cfg(feature = "plugins")]
+    {
+        snapshot.plugins = _plugins
+            .map(|host| {
+                host.diagnostics()
+                    .into_iter()
+                    .map(super::plugin_ops::diagnostic)
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
 
     snapshot
 }
@@ -242,13 +253,23 @@ pub async fn qqmusic_set_preferred_quality(
 }
 
 pub async fn provider_set_preferred_quality(
-    provider_id: &str,
+    profile: &yaqmc_provider_api::ProviderProfileKey,
     provider: &dyn PlaybackSourceProvider,
     player: &PlayerService,
     quality: AudioQualityPreference,
 ) -> ProviderResult<ProviderStatus> {
     let status = provider.playback_set_preferred_quality(quality).await?;
-    reload_provider_track(player, provider_id).await;
+    let current = player.current_track().await;
+    if current
+        .as_ref()
+        .and_then(|song| song.provider.as_ref())
+        .is_some_and(|reference| {
+            reference.provider_id == profile.provider_id
+                && reference.profile_id == profile.profile_id
+        })
+    {
+        reload_provider_track(player, &profile.provider_id).await;
+    }
     Ok(status)
 }
 
@@ -291,7 +312,7 @@ pub async fn qqmusic_set_current_quality(
 }
 
 pub async fn provider_set_current_quality(
-    provider_id: &str,
+    profile: &yaqmc_provider_api::ProviderProfileKey,
     provider: &dyn PlaybackSourceProvider,
     player: &PlayerService,
     quality: AudioQualityPreference,
@@ -300,7 +321,10 @@ pub async fn provider_set_current_quality(
         .current_track()
         .await
         .and_then(|song| song.provider)
-        .filter(|reference| reference.provider_id == provider_id)
+        .filter(|reference| {
+            reference.provider_id == profile.provider_id
+                && reference.profile_id == profile.profile_id
+        })
         .map(|reference| reference.track_id)
         .ok_or_else(|| {
             ProviderCommandError::invalid_request(
@@ -655,7 +679,7 @@ mod tests {
         .expect("saved preference survives reload failure");
         assert_eq!(status.preferred_quality, AudioQualityPreference::HiRes);
         let status = provider_set_preferred_quality(
-            "qqmusic",
+            &yaqmc_provider_api::ProviderProfileKey::default_profile("qqmusic").unwrap(),
             playback.as_ref(),
             &player,
             AudioQualityPreference::Automatic,
@@ -680,4 +704,32 @@ mod tests {
             Some("network-failure")
         );
     }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppCacheStats {
+    #[serde(flatten)]
+    cache: yaqmc_provider_api::CacheStats,
+    component_bytes: u64,
+    component_entries: u64,
+}
+
+pub fn app_cache_stats(core: &CoreHandle, clear: bool) -> Result<AppCacheStats, String> {
+    #[cfg(feature = "plugins")]
+    let (component_bytes, component_entries) = core.plugins().inspect_component_cache(clear)?;
+    #[cfg(not(feature = "plugins"))]
+    let (component_bytes, component_entries) = (0, 0);
+    let mut cache = if clear {
+        core.storage().clear()
+    } else {
+        core.storage().stats()
+    }
+    .map_err(|error| error.to_string())?;
+    cache.total_bytes = cache.total_bytes.saturating_add(component_bytes);
+    Ok(AppCacheStats {
+        cache,
+        component_bytes,
+        component_entries,
+    })
 }

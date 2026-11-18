@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::{ErrorCode, DEFAULT_METHOD_PAYLOAD_BYTES, FRAME_HARD_CAP_BYTES};
 
 const PLUGIN_READ_ASSET_RESPONSE_CAP: u32 = 6 * 1024 * 1024;
+// Public playlist details include every paginated track, unlike feed previews.
+const PLAYLIST_DETAIL_RESPONSE_CAP: u32 = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -165,6 +167,11 @@ const METHODS: &[MethodSpec] = &[
     spec("provider_area", MethodOwner::Core, OriginClass::Main),
     spec("provider_library", MethodOwner::Core, OriginClass::Main),
     spec("provider_search", MethodOwner::Core, OriginClass::Main),
+    spec(
+        "provider_search_cancel",
+        MethodOwner::Core,
+        OriginClass::Main,
+    ),
     spec("provider_song", MethodOwner::Core, OriginClass::Main),
     spec("provider_album", MethodOwner::Core, OriginClass::Main),
     spec("provider_artist", MethodOwner::Core, OriginClass::Main),
@@ -175,6 +182,12 @@ const METHODS: &[MethodSpec] = &[
     ),
     spec("provider_playlist", MethodOwner::Core, OriginClass::Main),
     spec("provider_lyrics", MethodOwner::Core, OriginClass::Main),
+    spec("provider_comments", MethodOwner::Core, OriginClass::Main),
+    spec(
+        "provider_comments_cancel",
+        MethodOwner::Core,
+        OriginClass::Main,
+    ),
     spec(
         "provider_recommendation_next",
         MethodOwner::Core,
@@ -284,6 +297,8 @@ const METHODS: &[MethodSpec] = &[
     ),
     spec("provider_sign_out", MethodOwner::Core, OriginClass::Main),
     spec("provider_cache_stats", MethodOwner::Core, OriginClass::Main),
+    spec("app_cache_stats", MethodOwner::Core, OriginClass::Main),
+    spec("app_clear_cache", MethodOwner::Core, OriginClass::Main),
     spec("provider_clear_cache", MethodOwner::Core, OriginClass::Main),
     spec("qqmusic_status", MethodOwner::Core, OriginClass::Main),
     spec("qqmusic_home", MethodOwner::Core, OriginClass::Main),
@@ -596,6 +611,41 @@ const METHODS: &[MethodSpec] = &[
         OriginClass::Main,
     ),
     spec("plugin_list", MethodOwner::Core, OriginClass::Main),
+    spec(
+        "plugin_update_policy_get",
+        MethodOwner::Core,
+        OriginClass::Main,
+    ),
+    spec(
+        "plugin_update_policy_set",
+        MethodOwner::Core,
+        OriginClass::Main,
+    ),
+    spec("plugin_update_check", MethodOwner::Core, OriginClass::Main),
+    spec(
+        "plugin_update_prepare",
+        MethodOwner::Core,
+        OriginClass::Main,
+    ),
+    spec("plugin_update_apply", MethodOwner::Core, OriginClass::Main),
+    spec("plugin_update_status", MethodOwner::Core, OriginClass::Main),
+    spec("plugin_update_cancel", MethodOwner::Core, OriginClass::Main),
+    spec(
+        "plugin_update_runtime_ready",
+        MethodOwner::Core,
+        OriginClass::Main,
+    ),
+    spec(
+        "plugin_update_editing",
+        MethodOwner::Core,
+        OriginClass::Main,
+    ),
+    spec("plugin_store_search", MethodOwner::Core, OriginClass::Main),
+    spec(
+        "plugin_store_releases",
+        MethodOwner::Core,
+        OriginClass::Main,
+    ),
     spec("plugin_inspect_path", MethodOwner::Core, OriginClass::Main),
     spec("plugin_install", MethodOwner::Core, OriginClass::Main),
     spec("plugin_set_enabled", MethodOwner::Core, OriginClass::Main),
@@ -613,9 +663,16 @@ const METHODS: &[MethodSpec] = &[
     ),
     spec("plugin_diagnostics", MethodOwner::Core, OriginClass::Main),
     spec("plugin_runtime_start", MethodOwner::Core, OriginClass::Main),
+    spec(
+        "plugin_runtime_authorize",
+        MethodOwner::Core,
+        OriginClass::Host,
+    ),
+    spec("plugin_runtime_ready", MethodOwner::Core, OriginClass::Main),
     spec("plugin_runtime_stop", MethodOwner::Core, OriginClass::Main),
     spec("plugin_mark_failed", MethodOwner::Core, OriginClass::Main),
     spec("plugin_bridge", MethodOwner::Core, OriginClass::Main),
+    spec("plugin_local_files", MethodOwner::Core, OriginClass::Host),
     spec(
         "plugin_pick_directory",
         MethodOwner::Host,
@@ -630,6 +687,42 @@ const METHODS: &[MethodSpec] = &[
     spec("plugin_read_asset", MethodOwner::Core, OriginClass::Main),
     spec("plugin_settings_get", MethodOwner::Core, OriginClass::Main),
     spec("plugin_settings_set", MethodOwner::Core, OriginClass::Main),
+    spec(
+        "host_updater_check",
+        MethodOwner::Host,
+        OriginClass::MainRenderer,
+    ),
+    spec(
+        "host_updater_download",
+        MethodOwner::Host,
+        OriginClass::MainRenderer,
+    ),
+    spec(
+        "host_updater_install",
+        MethodOwner::Host,
+        OriginClass::MainRenderer,
+    ),
+    spec(
+        "host_updater_start",
+        MethodOwner::Host,
+        OriginClass::MainRenderer,
+    ),
+    spec(
+        "host_updater_status",
+        MethodOwner::Host,
+        OriginClass::MainRenderer,
+    ),
+    spec(
+        "host_updater_cancel",
+        MethodOwner::Host,
+        OriginClass::MainRenderer,
+    ),
+    spec(
+        "host_updater_preferences",
+        MethodOwner::Host,
+        OriginClass::MainRenderer,
+    ),
+    spec("core_shutdown_cancel", MethodOwner::Core, OriginClass::Host),
     spec("core_ping", MethodOwner::Core, OriginClass::Main),
     spec("platform_attach", MethodOwner::Core, OriginClass::Main),
     spec(
@@ -681,6 +774,14 @@ const METHODS: &[MethodSpec] = &[
 ];
 
 pub const PROTOCOL_ONLY_METHODS: &[&str] = &[
+    "host_updater_check",
+    "host_updater_download",
+    "host_updater_install",
+    "host_updater_start",
+    "host_updater_status",
+    "host_updater_cancel",
+    "host_updater_preferences",
+    "core_shutdown_cancel",
     "core_ping",
     "platform_attach",
     "core_shutdown_prepare",
@@ -725,12 +826,19 @@ const fn timeout_class(name: &str) -> TimeoutClass {
     if const_starts_with(name, "player_") || const_eq(name, "core_ping") {
         TimeoutClass::Control
     } else if const_eq(name, "plugin_install")
+        || const_eq(name, "provider_search")
         || const_eq(name, "plugin_install_from")
         || const_eq(name, "plugin_install_unpacked")
         || const_eq(name, "plugin_reload")
+        // GitHub metadata reads can spend DNS, connect and body timeouts across redirects.
+        || const_eq(name, "plugin_store_search")
+        || const_eq(name, "plugin_store_releases")
         || const_eq(name, "diagnostics_export_bundle_to")
         || const_eq(name, "statistics_export_to")
         || const_eq(name, "platform_export_diagnostics")
+        || const_eq(name, "provider_playlist")
+        || const_eq(name, "qqmusic_playlist")
+        || const_eq(name, "core_shutdown_prepare")
     {
         TimeoutClass::Long
     } else {
@@ -741,6 +849,8 @@ const fn timeout_class(name: &str) -> TimeoutClass {
 const fn response_cap(name: &str) -> u32 {
     if const_eq(name, "plugin_read_asset") {
         PLUGIN_READ_ASSET_RESPONSE_CAP
+    } else if const_eq(name, "provider_playlist") || const_eq(name, "qqmusic_playlist") {
+        PLAYLIST_DETAIL_RESPONSE_CAP
     } else {
         DEFAULT_METHOD_PAYLOAD_BYTES
     }

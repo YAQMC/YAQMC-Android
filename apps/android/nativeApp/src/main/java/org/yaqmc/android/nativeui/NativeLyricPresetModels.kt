@@ -163,7 +163,7 @@ internal data class NativeLyricPresetPreferences(
         val validOverrides = overrides.filterKeys { it in builtins }.mapValues { (id, preset) -> preset.normalized().copy(id = id) }
         val validIds = builtins + validCustom.map { it.id }
         return copy(
-            selectedId = selectedId.takeIf { it in validIds } ?: "builtin.classic",
+            selectedId = selectedId.takeIf { it in validIds || it.matches(Regex("plugin:[A-Za-z0-9._-]+:[A-Za-z0-9._:-]+")) } ?: "builtin.classic",
             overrides = validOverrides,
             custom = validCustom,
         )

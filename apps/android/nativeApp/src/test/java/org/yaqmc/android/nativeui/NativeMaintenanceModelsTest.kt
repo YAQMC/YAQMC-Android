@@ -44,7 +44,7 @@ class NativeMaintenanceModelsTest {
         val stats = NativeCacheStats.parse(JSONObject("""
             {"totalBytes":2097152,"mediaBytes":1048576,"artworkBytes":512000,
              "mediaEntries":4,"artworkEntries":5,"metadataEntries":27,"lyricEntries":8,
-             "mediaLimitBytes":104857600,"artworkLimitBytes":52428800}
+             "mediaLimitBytes":104857600,"artworkLimitBytes":52428800,"componentBytes":524288,"componentEntries":2}
         """))
         assertEquals(2097152L, stats.totalBytes)
         assertEquals(4L, stats.mediaEntries)
@@ -52,6 +52,8 @@ class NativeMaintenanceModelsTest {
         assertEquals(27L, stats.metadataEntries)
         assertEquals(8L, stats.lyricEntries)
         assertEquals(104857600L, stats.mediaLimitBytes)
+        assertEquals(524288L, stats.componentBytes)
+        assertEquals(2L, stats.componentEntries)
         assertEquals("2.0 MB", readableBytes(stats.totalBytes))
         assertEquals("0 B", readableBytes(-1))
     }

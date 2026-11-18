@@ -25,23 +25,41 @@ import org.yaqmc.android.R
 @Composable
 internal fun Library(model: NativeViewModel) {
     val account by model.account.collectAsStateWithLifecycle()
+    val plugins by model.plugins.state.collectAsStateWithLifecycle()
+    val contributions by model.plugins.contributions.collectAsStateWithLifecycle()
+    val route by model.route.collectAsStateWithLifecycle()
+    val supportsAccount = plugins.providers.firstOrNull { it.text("providerId") == route.providerId }?.optJSONObject("capabilities")?.optBoolean("account", true) != false
     LazyColumn(Modifier.fillMaxSize().testTag("library-list"), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        if (!account.authenticated) item { AccountLibraryNotice(account, model) }
-        item {
+        if (supportsAccount && !account.authenticated) item { AccountLibraryNotice(account, model) }
+        if (supportsAccount) item {
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 LibraryCollection(stringResource(R.string.native_favorites), Modifier.weight(1f).fillMaxHeight(), featured = true,
-                    open = { model.navigate(NativeRoute("favorites")) }) { Icon(Icons.Default.Favorite, null, Modifier.size(30.dp)) }
+                    open = { model.openLibrary("favorites") }) { Icon(Icons.Default.Favorite, null, Modifier.size(30.dp)) }
                 LibraryCollection(stringResource(R.string.native_my_playlists), Modifier.weight(1f).fillMaxHeight(), featured = false,
-                    open = { model.navigate(NativeRoute("account-playlists")) }) { Icon(painterResource(R.drawable.ic_player_queue_music), null, Modifier.size(30.dp)) }
+                    open = { model.openLibrary("account-playlists") }) { Icon(painterResource(R.drawable.ic_player_queue_music), null, Modifier.size(30.dp)) }
             }
         }
         item {
             Column(Modifier.padding(top = 8.dp)) {
-                LibraryAction(stringResource(R.string.native_recent), R.drawable.ic_library_history) { model.navigate(NativeRoute("recent")) }
+                if (supportsAccount) LibraryAction(stringResource(R.string.native_recent), R.drawable.ic_library_history) { model.openLibrary("recent") }
                 LibraryAction(stringResource(R.string.native_statistics), R.drawable.ic_library_statistics) { model.navigate(NativeRoute("statistics")) }
             }
         }
+        if (plugins.providers.any { !it.optBoolean("isDefault") }) item {
+            Column {
+                plugins.providers.forEach { provider ->
+                    ListItem(headlineContent = { Text(provider.text("displayName", provider.text("providerId"))) },
+                        modifier = Modifier.fillMaxWidth().testTag("provider-${provider.text("providerId")}").clickable(enabled = provider.optBoolean("available")) { model.selectProvider(provider.text("providerId")) })
+                }
+            }
+        }
+        contributions.optJSONArray("navigation").objects().forEach { entry -> item("plugin-nav-${entry.text("pluginId")}-${entry.text("id")}") {
+            NativeSettingRow(entry.text("label"), stringResource(R.string.native_plugin_by, entry.text("pluginName")), "plugin-navigation-${entry.text("id")}") {
+                model.navigate(NativeRoute("plugin-page", id = entry.text("pageId"), pluginId = entry.text("pluginId")))
+            }
+        } }
+        item { NativePluginActions(model, "sidebar") }
     }
 }
 

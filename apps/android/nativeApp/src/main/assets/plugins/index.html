@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' blob:; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <link rel="stylesheet" href="runtime.css" />
+    <link rel="stylesheet" href="renderer.css" />
+    <script type="module" src="runtime.js"></script>
+  </head>
+  <body class="app-shell" data-host-kind="android">
+    <main id="scene" class="lyrics-stage" data-stage="open"></main>
+  </body>
+</html>

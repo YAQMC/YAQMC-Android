@@ -37,6 +37,12 @@ pub struct AlbumSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderTrackReference {
     pub provider_id: String,
+    /// Original catalog member when the host wraps a song in a federation.
+    /// Display metadata only; playback continues to use provider_id/track_id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_provider_id: Option<String>,
+    #[serde(default = "crate::profile::default_profile_id")]
+    pub profile_id: String,
     pub track_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub numeric_id: Option<u64>,
@@ -112,6 +118,8 @@ pub enum ShareEntityKind {
 #[serde(rename_all = "camelCase")]
 pub struct ShareTarget {
     pub provider_id: String,
+    #[serde(default = "crate::profile::default_profile_id")]
+    pub profile_id: String,
     pub entity_kind: ShareEntityKind,
     pub entity_id: String,
     pub title: String,
@@ -158,6 +166,7 @@ pub struct LyricLine {
 #[serde(rename_all = "camelCase")]
 pub struct LyricMetadata {
     pub source_label: String,
+    /// BCP 47 tag of the sung language when the provider knows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,10 +185,63 @@ pub enum LyricSyncMode {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LyricDocument {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<SongComment>,
     pub song_id: String,
     pub sync_mode: LyricSyncMode,
     pub metadata: LyricMetadata,
     #[serde(default)]
     pub vocalists: Vec<LyricVocalist>,
     pub lines: Vec<LyricLine>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SongComment {
+    pub id: String,
+    pub content: String,
+    pub author: String,
+    pub liked_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<CommentReplyTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommentReplyTarget {
+    pub author: String,
+    pub content: String,
+}
+
+#[cfg(test)]
+mod profile_compat_tests {
+    use super::*;
+    use crate::DEFAULT_PROFILE_ID;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_track_reference_and_share_target_use_default_profile() {
+        let reference: ProviderTrackReference = serde_json::from_value(json!({
+            "providerId": "qqmusic",
+            "trackId": "song-1"
+        }))
+        .expect("legacy track reference deserializes");
+        assert_eq!(reference.profile_id, DEFAULT_PROFILE_ID);
+
+        let target: ShareTarget = serde_json::from_value(json!({
+            "providerId": "qqmusic",
+            "entityKind": "song",
+            "entityId": "song-1",
+            "title": "Song",
+            "artists": []
+        }))
+        .expect("legacy share target deserializes");
+        assert_eq!(target.profile_id, DEFAULT_PROFILE_ID);
+    }
 }

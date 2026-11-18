@@ -10,6 +10,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
+import kotlinx.coroutines.flow.collect
 import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
@@ -29,17 +31,28 @@ class NativeActivity : ComponentActivity() {
     private var links: AutoCloseable? = null
     private var shareJob: Job? = null
     private val oauth = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        model.finishOAuth(if (it.resultCode == Activity.RESULT_OK) it.data?.dataString else null)
+        model.finishOAuth(if (it.resultCode == Activity.RESULT_OK) it.data?.dataString else null,
+            if (it.resultCode == Activity.RESULT_OK) it.data?.getStringExtra(OAuthActivity.EXTRA_BROWSER_SESSION_COOKIES) else null)
+    }
+    private val pluginFiles = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        model.plugins.nativeFiles.picked(it)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         deepLinks.accept(intent)
+        lifecycleScope.launch {
+            model.plugins.state.collect {
+                model.plugins.nativeFiles.openPicker = { pickerIntent ->
+                    check(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { "files.picker-unavailable" }
+                    pluginFiles.launch(pickerIntent)
+                }
+            }
+        }
         links = DeepLinkInbox.subscribe { target ->
             lifecycleScope.launch {
-                if (target.providerId == "qqmusic") model.navigate(NativeRoute("song", target.entityId))
-                else model.notify(R.string.native_unsupported_provider)
+                model.navigate(NativeRoute("song", target.entityId, providerId = target.providerId, profileId = target.profileId))
             }
         }
         setContent {
@@ -57,6 +70,8 @@ class NativeActivity : ComponentActivity() {
     override fun onStop() { model.stopObserving(); super.onStop() }
     override fun onDestroy() { shareJob?.cancel(); links?.close(); super.onDestroy() }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); deepLinks.accept(intent) }
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean = model.plugins.key(event) || super.onKeyDown(keyCode, event)
+    override fun onKeyShortcut(keyCode: Int, event: android.view.KeyEvent): Boolean = model.plugins.key(event) || super.onKeyShortcut(keyCode, event)
 
     private fun login(method: String) {
         model.startLogin(method, resources.configuration.smallestScreenWidthDp,
@@ -71,6 +86,7 @@ class NativeActivity : ComponentActivity() {
                     putStringArrayListExtra(OAuthActivity.EXTRA_NAVIGATION_ALLOWLIST, ArrayList((0 until hosts.length()).map { hosts.getString(it) }))
                     putExtra(OAuthActivity.EXTRA_EXTERNAL_NAVIGATION_RULES, prepared.optJSONArray("externalNavigationRules")?.toString() ?: "[]")
                     putExtra(OAuthActivity.EXTRA_CALLBACK_PREFIX, prefix)
+                    prepared.optJSONObject("browserSession")?.let { putExtra(OAuthActivity.EXTRA_BROWSER_SESSION, it.toString()) }
                 })
             },
             mobile = { authorization ->
@@ -86,7 +102,8 @@ class NativeActivity : ComponentActivity() {
     private fun share(track: Track, kind: SongShareKind) {
         if (shareJob?.isActive == true) return
         shareJob = model.action {
-            val payload = NativeSongShare.resolve(track, kind, model.core)
+            val providers = model.plugins.state.value.providers.filter { it.optBoolean("available") }.map { it.text("providerId") }.toSet() + "qqmusic"
+            val payload = NativeSongShare.resolve(track, kind, model.core, providers)
             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_TITLE, payload.title)

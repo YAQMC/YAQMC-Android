@@ -144,6 +144,14 @@
     },
     "seq": 13
   },
+  "host://provider-local-files": {
+    "channel": "host://provider-local-files",
+    "kind": "event",
+    "payload": {
+      "release": "example-session"
+    },
+    "seq": 0
+  },
   "host://update": {
     "channel": "host://update",
     "kind": "event",
@@ -348,6 +356,21 @@
     },
     "seq": 5
   },
+  "plugin://update-progress": {
+    "channel": "plugin://update-progress",
+    "kind": "event",
+    "payload": {
+      "downloadedBytes": 0,
+      "error": null,
+      "operationId": "operation-0",
+      "phase": "prepared",
+      "pluginId": "example",
+      "preview": null,
+      "runtimeChanged": false,
+      "totalBytes": null
+    },
+    "seq": 6
+  },
   "preferences://changed": {
     "channel": "preferences://changed",
     "kind": "event",
@@ -355,5 +378,18 @@
       "key": "appearance.theme"
     },
     "seq": 6
+  },
+  "provider://profiles-changed": {
+    "channel": "provider://profiles-changed",
+    "kind": "event",
+    "payload": [
+      {
+        "enabled": true,
+        "label": "QQ Music",
+        "profileId": "default",
+        "providerId": "qqmusic"
+      }
+    ],
+    "seq": 10
   }
 }

@@ -1,0 +1,950 @@
+import { PluginSongBadges } from '../PluginSongBadges';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import { useTranslation } from 'react-i18next';
+import {
+  colorFieldEmitterColor,
+  resolveArtworkPalette,
+  type ArtworkPalette,
+} from '../../application/artwork-color';
+import {
+  lineGapFromLineHeight,
+  listExtraSceneWidgets,
+  resolvePrimaryFontSizePx,
+  resolveSceneTextBinding,
+  resolveSecondaryFontSizePx,
+  type ExtraSceneWidget,
+  type SceneWidgetId,
+} from '../../application/lyrics-preset';
+import { resolveSceneAssetUrl, usePluginAssetRevision } from '../../application/plugin-asset';
+import { linuxSkipsLiveVideo, skipsLiveCssBlur } from '../../application/platform-integration';
+import {
+  currentPluginSceneInstance,
+  attachPluginSceneBackground,
+  detachPluginSceneBackground,
+  pluginSceneCssVars,
+  pluginSceneBackgroundRegistration,
+  pluginSceneDataState,
+  pluginSceneWidgetOverrides,
+  subscribePluginSceneState,
+  updatePluginSceneBackground,
+  type PluginSceneBackgroundRegistration,
+} from '../../application/plugin-runtime';
+import { useLyricsTransportDefinition } from '../../application/use-lyrics-transport';
+import type { LyricsTransportSurface } from '../../application/lyrics-transport';
+import { widgetBoxStyle } from '../../application/lyrics-scene-geometry';
+import { sceneForOrientation } from '../../application/lyrics-scene-layout';
+import { isAndroidRuntime } from '../../application/host-capabilities';
+import { usePlayerStore } from '../../application/player-store';
+import { coverInk } from './coverInk';
+import { LyricsTransportControls } from '../LyricsTransportControls';
+import { LyricsViewport } from './LyricsViewport';
+import type { LyricsSceneProps } from './types';
+
+type SceneStyle = CSSProperties & {
+  '--lyrics-color': string;
+  '--lyrics-foreground': string;
+  '--lyrics-ink': string;
+  '--lyrics-ink-contrast': string;
+  '--lyrics-stage-base': string;
+  '--lyrics-font-scale': string;
+  '--lyrics-font-size': string;
+  '--lyrics-secondary-font-size': string;
+  '--lyrics-line-height': string;
+  '--lyrics-font-weight': string;
+  '--lyrics-line-gap': string;
+  '--scene-progress': string;
+  '--scene-duration': string;
+  '--scene-artwork-primary': string;
+  '--scene-artwork-secondary': string;
+  '--scene-accent': string;
+  '--scene-font-scale': string;
+};
+
+function cssPx(value: number): string {
+  return `${Number(value.toFixed(2))}px`;
+}
+
+type PluginBackgroundAttachment = {
+  canvas: HTMLCanvasElement;
+  pluginId: string;
+  sceneId: string;
+  instanceId: number;
+  attached: boolean;
+  detachTimer: ReturnType<typeof setTimeout> | null;
+};
+
+function pluginBackgroundCanvasKey(
+  registration: PluginSceneBackgroundRegistration,
+  instanceId: number,
+): string {
+  // React must replace the DOM canvas when the scene instance changes. A
+  // transferred canvas cannot be transferred to another Worker or scene.
+  return `${registration.pluginId}/${registration.sceneId}/${registration.version}/${instanceId}`;
+}
+
+function SceneWidget({
+  id,
+  selected,
+  editor,
+  style,
+  onSelect,
+  onEditorDragStart,
+  children,
+}: {
+  id: SceneWidgetId;
+  selected: boolean;
+  editor: boolean;
+  style: CSSProperties;
+  onSelect?: (id: SceneWidgetId) => void;
+  onEditorDragStart?: (id: SceneWidgetId, event: ReactPointerEvent<HTMLElement>) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="lyrics-scene__widget"
+      data-widget={id}
+      data-scene-widget={id}
+      data-scene-widget-id={id}
+      data-scene-widget-type={id}
+      data-scene-state={selected ? 'active' : 'inactive'}
+      data-selected={selected || undefined}
+      data-editor={editor || undefined}
+      onPointerDown={(event) => {
+        if (!editor) return;
+        onSelect?.(id);
+        if (event.target instanceof Element && event.target.closest('[data-editor-interactive]')) {
+          return;
+        }
+        onEditorDragStart?.(id, event);
+      }}
+      style={style}
+    >
+      {editor && <div className="lyrics-scene__hit" data-editor-hit="" aria-hidden="true" />}
+      {children}
+    </div>
+  );
+}
+
+function VinylDisc({
+  artworkSrc,
+  artworkAlt,
+  opacity,
+  isPlaying: isPlayingProp,
+}: {
+  artworkSrc: string | null;
+  artworkAlt: string;
+  opacity: number;
+  isPlaying?: boolean;
+}) {
+  const storePlaying = usePlayerStore((state) => state.isPlaying);
+  const isPlaying = isPlayingProp ?? storePlaying;
+  return (
+    <div className="lyrics-stage__disc" data-scene-widget="vinyl" style={{ opacity }}>
+      <div className="lyrics-stage__disc-spin" data-playing={isPlaying || undefined}>
+        {artworkSrc && (
+          <img
+            className="lyrics-stage__disc-cover"
+            src={artworkSrc}
+            alt={artworkAlt}
+            draggable={false}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScenePlaybackState({ editor, isPlaying }: { editor: boolean; isPlaying: boolean }) {
+  const storePlaying = usePlayerStore((state) => state.isPlaying);
+  const marker = useRef<HTMLSpanElement>(null);
+  const playing = editor ? isPlaying : storePlaying;
+  useLayoutEffect(() => {
+    const scene = marker.current?.closest('.lyrics-scene');
+    if (scene instanceof HTMLElement) {
+      scene.dataset.playbackState = playing ? 'playing' : 'paused';
+    }
+  }, [playing]);
+  return <span ref={marker} hidden data-scene-playback="" />;
+}
+
+export function LyricsScene({
+  preset,
+  bindings,
+  appearance,
+  mode,
+  selectedWidgetId = null,
+  onSelectWidget,
+  editorGesture = false,
+  guides = [],
+  className,
+  previewFrame,
+  fallbackNotice,
+  onFollowStateChange,
+  onEditorDragStart,
+  transportHidden = false,
+  hideTransportWidget = false,
+  layoutKey,
+  compact = false,
+  transportSurface = 'window',
+}: LyricsSceneProps & {
+  transportHidden?: boolean;
+  hideTransportWidget?: boolean;
+  layoutKey?: string;
+  compact?: boolean;
+  transportSurface?: LyricsTransportSurface;
+}) {
+  const { t: settings } = useTranslation('settings', { keyPrefix: 'lyricsPresets' });
+  const root = useRef<HTMLDivElement>(null);
+  const [sceneSize, setSceneSize] = useState({ width: 0, height: 0 });
+  const [palette, setPalette] = useState<ArtworkPalette | null>(null);
+  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
+  const [extraUrls, setExtraUrls] = useState<Record<string, string>>({});
+  const [videoFailed, setVideoFailed] = useState(false);
+  const [pluginVars, setPluginVars] = useState(pluginSceneCssVars());
+  const [pluginState, setPluginState] = useState(pluginSceneDataState());
+  const [documentVisible, setDocumentVisible] = useState(
+    typeof document === 'undefined' || document.visibilityState === 'visible',
+  );
+  const editor = mode === 'editor';
+  const runtimePlaying = usePlayerStore((state) => state.isPlaying);
+  const runtimeScrubbing = usePlayerStore((state) => state.isScrubbing);
+  const runtimeTimelineRevision = usePlayerStore((state) => state.timelineRevision);
+  // While paused nothing interpolates the transport, so it needs the live store
+  // position; `bindings.positionMs` is only sampled when the host re-renders.
+  const runtimePausedPositionMs = usePlayerStore((state) =>
+    state.isPlaying ? null : state.positionMs,
+  );
+  const portrait = sceneSize.width > 0 && sceneSize.height > sceneSize.width;
+  const assetRevision = usePluginAssetRevision();
+  const scene = useMemo(
+    () => (editor ? preset.scene : sceneForOrientation(preset, portrait)),
+    [editor, preset, portrait],
+  );
+  const customLayout = portrait && Boolean(preset.portraitScene);
+  const adaptivePortrait = portrait && !isAndroidRuntime() && !compact;
+  const compactLayout = compact && !customLayout;
+  // The editor and desktop retain preset geometry. A compact runtime reuses the
+  // same widgets in normal grid flow, so metadata cannot cover the transport.
+  const boxStyle = (box: Parameters<typeof widgetBoxStyle>[0]): CSSProperties =>
+    compactLayout && !editor ? { zIndex: box.zIndex } : widgetBoxStyle(box);
+  const { durationMs, getPositionMs } = bindings;
+  const transportDefinition = useLyricsTransportDefinition(transportSurface);
+  const scenePositionMs = editor ? bindings.positionMs : bindings.getPositionMs();
+  const sceneProgress =
+    bindings.durationMs === 0 ? 0 : (scenePositionMs / Math.max(bindings.durationMs, 1)) * 100;
+  const primaryFontPx = resolvePrimaryFontSizePx(
+    preset.typography.fontScale,
+    sceneSize.height,
+    sceneSize.width * scene.lyrics.width,
+  );
+  const secondaryFontPx = resolveSecondaryFontSizePx(primaryFontPx);
+  // A user-selected solid background is the actual lyric backdrop; otherwise
+  // the artwork palette is the best stable proxy before image pixels are drawn.
+  const backgroundInkSource =
+    (scene.background.source === 'gradient' ? scene.background.gradient?.from : undefined) ??
+    (appearance.imageSource ? palette?.primary : undefined) ??
+    appearance.baseColor ??
+    palette?.primary ??
+    bindings.artworkColor;
+  const ink = coverInk(backgroundInkSource, { dimmed: true });
+
+  useLayoutEffect(() => {
+    const node = root.current;
+    if (!node) return;
+    const update = () => {
+      const bounds = node.getBoundingClientRect();
+      const width = node.clientWidth || bounds.width || 0;
+      const height = node.clientHeight || bounds.height || 0;
+      setSceneSize((current) =>
+        current.width === width && current.height === height ? current : { width, height },
+      );
+    };
+    update();
+    if (typeof ResizeObserver !== 'function') return;
+    let frame: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        update();
+      });
+    });
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [previewFrame, layoutKey]);
+
+  useEffect(
+    () =>
+      subscribePluginSceneState(() => {
+        setPluginVars({ ...pluginSceneCssVars() });
+        setPluginState(pluginSceneDataState());
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const updateVisibility = () => setDocumentVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', updateVisibility);
+    return () => document.removeEventListener('visibilitychange', updateVisibility);
+  }, []);
+
+  useEffect(() => {
+    const paletteSource =
+      appearance.mode === 'image' ? appearance.imageSource : bindings.artworkSrc;
+    const identity = bindings.songId ?? paletteSource ?? 'none';
+    const generation = Date.now();
+    let cancelled = false;
+    void resolveArtworkPalette(identity, paletteSource, bindings.artworkColor, generation).then(
+      (next) => {
+        if (!cancelled) setPalette(next);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    appearance.imageSource,
+    appearance.mode,
+    bindings.songId,
+    bindings.artworkSrc,
+    bindings.artworkColor,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const pluginId = preset.pluginId;
+    void resolveSceneAssetUrl(scene.background.media, pluginId).then((url) => {
+      if (!cancelled) {
+        setMediaUrl(url);
+        setVideoFailed(false);
+      }
+    });
+    const extras = listExtraSceneWidgets(scene);
+    void Promise.all(
+      extras.map(async (widget) => {
+        const url = await resolveSceneAssetUrl(widget.asset, pluginId);
+        return [widget.id, url] as const;
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const [id, url] of entries) {
+        if (url) next[id] = url;
+      }
+      setExtraUrls(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [preset.pluginId, scene, assetRevision]);
+
+  useEffect(() => {
+    if (editor || !runtimePlaying || runtimeScrubbing) return;
+    let frame = 0;
+    let written = '';
+    const maxDurationMs = Math.max(durationMs, 1);
+    const tick = () => {
+      // The shared transport controls own the seek slider; the scene keeps this
+      // loop for its own progress CSS variables only. --scene-progress is inherited by the whole
+      // scene, so only write it when its 0.1% step changes rather than restyling every frame.
+      const positionMs = Math.max(0, Math.min(getPositionMs(), maxDurationMs));
+      const progress = (positionMs / maxDurationMs).toFixed(3);
+      if (progress !== written) {
+        written = progress;
+        root.current?.style.setProperty('--scene-progress', progress);
+      }
+      frame = window.requestAnimationFrame(tick);
+    };
+    tick();
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    durationMs,
+    getPositionMs,
+    editor,
+    runtimePlaying,
+    runtimeScrubbing,
+    runtimeTimelineRevision,
+  ]);
+
+  const style = {
+    '--lyrics-color': palette?.secondary ?? bindings.artworkColor,
+    '--lyrics-ink': ink.ink,
+    '--lyrics-ink-contrast': ink.contrast,
+    // Keep the foreground accessible, but make the sampled cover accent
+    // visible enough to read as part of the scene rather than plain white.
+    '--lyrics-foreground': `color-mix(in srgb, ${ink.ink} 72%, ${palette?.secondary ?? bindings.artworkColor})`,
+    '--lyrics-stage-base': appearance.baseColor ?? scene.background.fallbackColor,
+    '--lyrics-font-scale': String(preset.typography.fontScale),
+    '--lyrics-font-size': cssPx(primaryFontPx),
+    '--lyrics-secondary-font-size': cssPx(secondaryFontPx),
+    '--lyrics-line-height': String(preset.typography.lineHeight),
+    '--lyrics-font-weight': String(bindings.fontWeight),
+    '--lyrics-line-gap': `${lineGapFromLineHeight(preset.typography.lineHeight)}cqh`,
+    '--scene-progress': String(Math.max(0, Math.min(1, sceneProgress / 100))),
+    '--scene-duration': String(bindings.durationMs),
+    '--scene-artwork-primary': palette?.primary ?? bindings.artworkColor,
+    '--scene-artwork-secondary': palette?.secondary ?? bindings.artworkColor,
+    '--scene-accent': palette?.secondary ?? bindings.artworkColor,
+    '--scene-font-scale': String(preset.typography.fontScale),
+    ...Object.fromEntries(
+      Object.entries(pluginVars).map(([name, value]) => [`--scene-${name}`, value]),
+    ),
+    backgroundColor: appearance.baseColor ?? scene.background.fallbackColor,
+  } as SceneStyle;
+
+  const pluginSceneKey = preset.pluginId
+    ? `${preset.pluginId}/${preset.id.replace(`plugin:${preset.pluginId}:`, '')}`
+    : undefined;
+  const instance = currentPluginSceneInstance();
+  const reducedMotion =
+    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const skipVideo = reducedMotion || linuxSkipsLiveVideo();
+  const extras = listExtraSceneWidgets(scene);
+  const overrides = pluginSceneWidgetOverrides();
+  const pluginBackground =
+    !editor && scene.background.source === 'plugin' && pluginSceneKey
+      ? pluginSceneBackgroundRegistration(
+          preset.pluginId ?? '',
+          pluginSceneKey.split('/').slice(1).join('/'),
+        )
+      : null;
+  const pluginBackgroundVersion = pluginBackground?.version;
+  const hasPluginBackground = pluginBackgroundVersion !== undefined;
+  const pluginBackgroundCanvasRef = useRef<HTMLCanvasElement>(null);
+  const pluginBackgroundAttachedRef = useRef(false);
+  const pluginBackgroundAttachmentRef = useRef<PluginBackgroundAttachment | null>(null);
+  const reducedMotionPreference = reducedMotion;
+
+  const backgroundState = useMemo(
+    () => ({
+      width: sceneSize.width,
+      height: sceneSize.height,
+      pixelWidth: Math.max(1, Math.round(sceneSize.width * (globalThis.devicePixelRatio || 1))),
+      pixelHeight: Math.max(1, Math.round(sceneSize.height * (globalThis.devicePixelRatio || 1))),
+      isPlaying: bindings.isPlaying,
+      positionMs: scenePositionMs,
+      durationMs: bindings.durationMs,
+      visible: documentVisible,
+      reducedMotion: reducedMotionPreference,
+      songId: bindings.songId,
+      artworkColor: bindings.artworkColor,
+    }),
+    [
+      sceneSize.height,
+      sceneSize.width,
+      bindings.isPlaying,
+      bindings.durationMs,
+      bindings.songId,
+      bindings.artworkColor,
+      scenePositionMs,
+      reducedMotionPreference,
+      documentVisible,
+    ],
+  );
+  const pluginBackgroundStateRef = useRef(backgroundState);
+
+  useEffect(() => {
+    if (!hasPluginBackground || !pluginSceneKey || !pluginBackgroundCanvasRef.current) return;
+    const canvas = pluginBackgroundCanvasRef.current;
+    const sceneId = pluginSceneKey.split('/').slice(1).join('/');
+    const pluginId = preset.pluginId ?? '';
+    const existing = pluginBackgroundAttachmentRef.current;
+    if (
+      existing?.attached &&
+      existing.canvas === canvas &&
+      existing.pluginId === pluginId &&
+      existing.sceneId === sceneId &&
+      existing.instanceId === instance.id
+    ) {
+      if (existing.detachTimer !== null) {
+        globalThis.clearTimeout(existing.detachTimer);
+        existing.detachTimer = null;
+      }
+      pluginBackgroundAttachedRef.current = true;
+      return () => {
+        if (existing.detachTimer !== null) return;
+        existing.detachTimer = globalThis.setTimeout(() => {
+          existing.detachTimer = null;
+          if (!existing.attached) return;
+          detachPluginSceneBackground({
+            pluginId: existing.pluginId,
+            sceneId: existing.sceneId,
+            instanceId: existing.instanceId,
+          });
+          existing.attached = false;
+          if (pluginBackgroundAttachmentRef.current === existing) {
+            pluginBackgroundAttachmentRef.current = null;
+            pluginBackgroundAttachedRef.current = false;
+          }
+        }, 0);
+      };
+    }
+    const attachment: PluginBackgroundAttachment = {
+      canvas,
+      pluginId,
+      sceneId,
+      instanceId: instance.id,
+      attached: attachPluginSceneBackground({
+        pluginId,
+        sceneId,
+        instanceId: instance.id,
+        canvas,
+        state: pluginBackgroundStateRef.current,
+      }),
+      detachTimer: null,
+    };
+    pluginBackgroundAttachmentRef.current = attachment;
+    pluginBackgroundAttachedRef.current = attachment.attached;
+    return () => {
+      if (attachment.detachTimer !== null) return;
+      attachment.detachTimer = globalThis.setTimeout(() => {
+        attachment.detachTimer = null;
+        if (!attachment.attached) return;
+        detachPluginSceneBackground({
+          pluginId: attachment.pluginId,
+          sceneId: attachment.sceneId,
+          instanceId: attachment.instanceId,
+        });
+        attachment.attached = false;
+        if (pluginBackgroundAttachmentRef.current === attachment) {
+          pluginBackgroundAttachmentRef.current = null;
+          pluginBackgroundAttachedRef.current = false;
+        }
+      }, 0);
+    };
+  }, [
+    pluginBackgroundVersion,
+    hasPluginBackground,
+    pluginSceneKey,
+    preset.pluginId,
+    instance.id,
+    editor,
+  ]);
+
+  useEffect(() => {
+    pluginBackgroundStateRef.current = backgroundState;
+    if (!hasPluginBackground || !pluginSceneKey || !pluginBackgroundAttachedRef.current) return;
+    const sceneId = pluginSceneKey.split('/').slice(1).join('/');
+    updatePluginSceneBackground({
+      pluginId: preset.pluginId ?? '',
+      sceneId,
+      instanceId: instance.id,
+      state: backgroundState,
+    });
+  }, [
+    pluginBackgroundVersion,
+    pluginSceneKey,
+    preset.pluginId,
+    instance.id,
+    hasPluginBackground,
+    backgroundState,
+  ]);
+
+  useEffect(() => {
+    if (!hasPluginBackground || !pluginSceneKey || !pluginBackgroundAttachedRef.current) return;
+    const sceneId = pluginSceneKey.split('/').slice(1).join('/');
+    let cancelled = false;
+    const sendArtwork = async () => {
+      let artwork: ImageBitmap | null = null;
+      if (bindings.artworkSrc && typeof createImageBitmap === 'function') {
+        try {
+          const image = new Image();
+          image.decoding = 'async';
+          image.src = bindings.artworkSrc;
+          await image.decode();
+          if (!cancelled) artwork = await createImageBitmap(image);
+        } catch {
+          artwork = null;
+        }
+      }
+      if (cancelled) {
+        artwork?.close();
+        return;
+      }
+      updatePluginSceneBackground({
+        pluginId: preset.pluginId ?? '',
+        sceneId,
+        instanceId: instance.id,
+        state: { ...pluginBackgroundStateRef.current, artwork },
+      });
+    };
+    void sendArtwork();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    pluginBackgroundVersion,
+    pluginSceneKey,
+    preset.pluginId,
+    instance.id,
+    hasPluginBackground,
+    bindings.artworkSrc,
+  ]);
+
+  const artworkRadius =
+    scene.artwork.renderer === 'rounded'
+      ? `${Math.round(scene.artwork.radius * 50)}%`
+      : scene.artwork.renderer === 'square'
+        ? `${Math.round(scene.artwork.radius * 36)}px`
+        : undefined;
+
+  return (
+    <div
+      ref={root}
+      className={['lyrics-scene', editor ? 'lyrics-preset-preview' : '', className]
+        .filter(Boolean)
+        .join(' ')}
+      data-lyrics-scene="v1"
+      data-yaqmc-plugin-scene={pluginSceneKey ?? preset.pluginId}
+      data-scene-instance={instance.id || undefined}
+      data-scene-plugin-state={pluginState || undefined}
+      data-playback-state={editor ? (bindings.isPlaying ? 'playing' : 'paused') : undefined}
+      data-mode={mode}
+      data-orientation={portrait ? 'portrait' : 'landscape'}
+      data-custom-layout={customLayout || undefined}
+      data-adaptive-portrait={adaptivePortrait || undefined}
+      data-cover-layout={preset.layout}
+      data-background-mode={appearance.mode}
+      data-image-fit={appearance.imageFit}
+      data-preview-frame={previewFrame}
+      data-song-id={bindings.songId ?? undefined}
+      data-compact={compactLayout || undefined}
+      style={style}
+      onPointerDown={(event) => {
+        if (!editor || !onSelectWidget) return;
+        const widget = (event.target as HTMLElement | null)?.closest?.('[data-widget]');
+        if (!widget) onSelectWidget(null);
+      }}
+    >
+      {!editor && <ScenePlaybackState editor={false} isPlaying={bindings.isPlaying} />}
+      {scene.background.visible &&
+        appearance.imageSource &&
+        scene.background.source !== 'video' && (
+          <div
+            className="lyrics-stage__backdrop"
+            data-widget="background"
+            data-scene-widget="background"
+            data-scene-widget-id="background"
+            data-scene-widget-type="background"
+            data-selected={selectedWidgetId === 'background' || undefined}
+            style={{
+              backgroundImage: `url("${appearance.imageSource}")`,
+              backgroundSize: appearance.imageFit,
+              opacity: scene.background.opacity,
+            }}
+            aria-hidden="true"
+          />
+        )}
+      {scene.background.visible &&
+        scene.background.source === 'gradient' &&
+        scene.background.gradient && (
+          <div
+            className="lyrics-scene__gradient"
+            aria-hidden="true"
+            style={{
+              background: `linear-gradient(${scene.background.gradient.angle}deg, ${scene.background.gradient.from}, ${scene.background.gradient.to})`,
+              opacity: scene.background.opacity,
+            }}
+          />
+        )}
+      {scene.background.visible &&
+        scene.background.source === 'video' &&
+        mediaUrl &&
+        !videoFailed &&
+        !skipVideo && (
+          <video
+            className="lyrics-scene__video"
+            src={mediaUrl}
+            muted
+            loop
+            playsInline
+            autoPlay
+            aria-hidden="true"
+            onError={() => setVideoFailed(true)}
+            style={{
+              objectFit: scene.background.fit,
+              opacity: scene.background.opacity,
+            }}
+          />
+        )}
+      {scene.background.visible &&
+        (scene.background.source === 'colorField' || scene.background.colorField) && (
+          <div className="lyrics-scene__color-field" aria-hidden="true">
+            {(scene.background.colorField?.emitters ?? []).map((emitter) => (
+              <span
+                key={emitter.id}
+                className="lyrics-scene__color-emitter"
+                data-position={emitter.position}
+                style={{
+                  background: `radial-gradient(circle at center, ${colorFieldEmitterColor(emitter, palette)} 0%, transparent ${Math.round(emitter.falloff * 100)}%)`,
+                  opacity: emitter.intensity,
+                  width: `${Math.round(emitter.radius * 140)}%`,
+                  height: `${Math.round(emitter.radius * 140)}%`,
+                }}
+              />
+            ))}
+          </div>
+        )}
+      {scene.background.visible && pluginBackground && (
+        <canvas
+          key={pluginBackgroundCanvasKey(pluginBackground, instance.id)}
+          ref={pluginBackgroundCanvasRef}
+          className="lyrics-scene__plugin-background"
+          data-plugin-background={`${pluginBackground.pluginId}/${pluginBackground.sceneId}`}
+          aria-hidden="true"
+          style={{ opacity: scene.background.opacity }}
+        />
+      )}
+      {scene.background.visible && <div className="lyrics-stage__wash" aria-hidden="true" />}
+
+      {scene.artwork.visible && (
+        <SceneWidget
+          id="artwork"
+          editor={editor}
+          selected={selectedWidgetId === 'artwork'}
+          onSelect={(id) => onSelectWidget?.(id)}
+          onEditorDragStart={onEditorDragStart}
+          style={boxStyle(scene.artwork)}
+        >
+          {scene.artwork.renderer === 'vinyl' ? (
+            <VinylDisc
+              artworkSrc={bindings.artworkSrc}
+              artworkAlt={bindings.artworkAlt}
+              opacity={scene.artwork.opacity}
+              isPlaying={editor ? bindings.isPlaying : undefined}
+            />
+          ) : bindings.artworkSrc ? (
+            <img
+              className="lyrics-stage__control-panel__artwork"
+              src={bindings.artworkSrc}
+              alt={bindings.artworkAlt}
+              draggable={false}
+              style={{
+                opacity: scene.artwork.opacity,
+                borderRadius: artworkRadius,
+              }}
+            />
+          ) : (
+            <span
+              className="lyrics-stage__artwork-placeholder lyrics-stage__control-panel__artwork"
+              aria-hidden="true"
+            />
+          )}
+        </SceneWidget>
+      )}
+
+      {scene.metadata.visible && (
+        <SceneWidget
+          id="metadata"
+          editor={editor}
+          selected={selectedWidgetId === 'metadata'}
+          onSelect={(id) => onSelectWidget?.(id)}
+          onEditorDragStart={onEditorDragStart}
+          style={{ ...boxStyle(scene.metadata), textAlign: scene.metadata.align }}
+        >
+          <div className="lyrics-scene__metadata" data-align={scene.metadata.align}>
+            <strong
+              style={compactLayout ? undefined : { fontSize: `${scene.metadata.titleScale}em` }}
+            >
+              {bindings.title}
+            </strong>
+            <PluginSongBadges song={{ provider: bindings.provider }} />
+            <span
+              style={compactLayout ? undefined : { fontSize: `${scene.metadata.artistScale}em` }}
+            >
+              {bindings.artistLabel}
+            </span>
+          </div>
+        </SceneWidget>
+      )}
+
+      {scene.lyrics.visible && (
+        <SceneWidget
+          id="lyrics"
+          editor={editor}
+          selected={selectedWidgetId === 'lyrics'}
+          onSelect={(id) => onSelectWidget?.(id)}
+          onEditorDragStart={onEditorDragStart}
+          style={{
+            ...boxStyle(scene.lyrics),
+            ...(compactLayout ? {} : { fontSize: cssPx(primaryFontPx) }),
+          }}
+        >
+          <LyricsViewport
+            document={bindings.lyrics}
+            status={bindings.songId ? bindings.lyricsStatus : 'idle'}
+            isPlaying={bindings.isPlaying}
+            timelineRevision={bindings.timelineRevision}
+            presentationOffsetMs={bindings.presentationOffsetMs}
+            getPositionMs={bindings.getPositionMs}
+            seek={bindings.seek}
+            translation={bindings.translation}
+            romanization={bindings.romanization}
+            wordEffect={bindings.wordEffect}
+            wordAnimation={scene.lyrics.wordAnimation}
+            amll={bindings.amll}
+            followAnchor={scene.lyrics.followAnchor}
+            align={scene.lyrics.align}
+            songId={bindings.songId}
+            editorGesture={editor || editorGesture}
+            allowSeek={!editor}
+            onFollowStateChange={onFollowStateChange}
+            layoutKey={layoutKey}
+            styleKey={[
+              style['--lyrics-foreground'],
+              style['--lyrics-font-scale'],
+              style['--lyrics-font-size'],
+              style['--lyrics-line-height'],
+              style['--lyrics-font-weight'],
+            ].join('|')}
+          />
+        </SceneWidget>
+      )}
+
+      {scene.transport.visible && !hideTransportWidget && (editor || bindings.songId) && (
+        <SceneWidget
+          id="transport"
+          editor={editor}
+          selected={selectedWidgetId === 'transport'}
+          onSelect={(id) => onSelectWidget?.(id)}
+          onEditorDragStart={onEditorDragStart}
+          style={boxStyle(scene.transport)}
+        >
+          <div
+            className="lyrics-stage__controls lyrics-scene__transport"
+            data-hidden={transportHidden || undefined}
+            data-align={scene.transport.align}
+          >
+            <LyricsTransportControls
+              key={transportDefinition.id}
+              definition={transportDefinition}
+              artworkSource={bindings.artworkSrc}
+              title={bindings.title}
+              artistLabel={bindings.artistLabel}
+              isPlaying={editor ? bindings.isPlaying : runtimePlaying}
+              active={!transportHidden}
+              positionMs={
+                editor ? bindings.positionMs : (runtimePausedPositionMs ?? scenePositionMs)
+              }
+              durationMs={bindings.durationMs}
+              getPositionMs={bindings.getPositionMs}
+              onPrevious={() => bindings.previous?.()}
+              onTogglePlayback={bindings.togglePlayback}
+              onNext={() => bindings.next?.()}
+              onBeginScrub={() => bindings.beginScrub?.()}
+              onPreviewScrub={(positionMs) => bindings.previewScrub?.(positionMs)}
+              onCommitScrub={(positionMs) => (bindings.commitScrub ?? bindings.seek)(positionMs)}
+              onCancelScrub={bindings.cancelScrub}
+            />
+          </div>
+        </SceneWidget>
+      )}
+
+      {extras.map((widget) => (
+        <ExtraWidget
+          key={widget.id}
+          widget={widget}
+          url={extraUrls[widget.id] ?? (widget.source === 'artwork' ? bindings.artworkSrc : null)}
+          override={overrides.get(widget.id)}
+          bindings={bindings}
+          skipVideo={skipVideo}
+          skipLiveBlur={skipsLiveCssBlur()}
+        />
+      ))}
+
+      {editor && <div className="lyrics-scene__safe" aria-hidden="true" />}
+      {editor &&
+        guides.map((guide) => (
+          <div
+            key={`${guide.axis}-${guide.position}`}
+            className="lyrics-scene__guide"
+            data-axis={guide.axis}
+            style={
+              guide.axis === 'x'
+                ? { left: `${guide.position * 100}%` }
+                : { top: `${guide.position * 100}%` }
+            }
+          />
+        ))}
+
+      {fallbackNotice && (
+        <span className="lyrics-scene__fallback" role="status">
+          {settings('offlinePreview')}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export type { LyricsSceneProps } from './types';
+
+function ExtraWidget({
+  widget,
+  url,
+  override,
+  bindings,
+  skipVideo,
+  skipLiveBlur,
+}: {
+  widget: ExtraSceneWidget;
+  url: string | null | undefined;
+  override?: Record<string, string>;
+  bindings: LyricsSceneProps['bindings'];
+  skipVideo: boolean;
+  skipLiveBlur: boolean;
+}) {
+  const text =
+    resolveSceneTextBinding(widget.bind, {
+      title: bindings.title,
+      artist: bindings.artistLabel,
+      album: bindings.albumTitle ?? '',
+      positionMs: bindings.positionMs,
+      durationMs: bindings.durationMs,
+    }) ??
+    widget.text ??
+    '';
+  const opacity = override?.opacity ? Number(override.opacity) : (widget.opacity ?? 1);
+  const style: CSSProperties = {
+    ...widgetBoxStyle(widget),
+    opacity: Number.isFinite(opacity) ? opacity : 1,
+    transform:
+      [
+        override?.scale ? `scale(${override.scale})` : '',
+        override?.rotation ? `rotate(${override.rotation}deg)` : '',
+      ]
+        .filter(Boolean)
+        .join(' ') || undefined,
+    filter: skipLiveBlur || !override?.blur ? undefined : `blur(${override.blur}px)`,
+    textAlign: widget.align,
+  };
+  return (
+    <div
+      className="lyrics-scene__widget lyrics-scene__extra"
+      data-scene-widget={widget.kind}
+      data-scene-widget-id={widget.id}
+      data-scene-widget-type={widget.kind}
+      data-scene-state="inactive"
+      style={style}
+    >
+      {widget.kind === 'text' && <span className="lyrics-scene__text">{text}</span>}
+      {widget.kind === 'image' && url && (
+        <img src={url} alt="" draggable={false} style={{ objectFit: widget.fit ?? 'cover' }} />
+      )}
+      {widget.kind === 'video' && url && !skipVideo && (
+        <video src={url} muted loop playsInline autoPlay aria-hidden="true" />
+      )}
+    </div>
+  );
+}

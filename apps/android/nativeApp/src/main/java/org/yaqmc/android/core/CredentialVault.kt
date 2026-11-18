@@ -64,7 +64,8 @@ internal class CredentialVault(
     private fun aad(name: String) = "$applicationId:$name".toByteArray(StandardCharsets.UTF_8)
 
     private fun requireName(name: String) {
-        require(name.length in 1..128 && name.none(Char::isISOControl)) {
+        // Component accounts contain a SHA-256 namespace and an opaque credential handle (135 chars).
+        require(name.length in 1..256 && name.none(Char::isISOControl)) {
             "invalid credential key"
         }
     }

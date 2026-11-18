@@ -130,6 +130,11 @@ Android Kotlin 源码位于 `nativeApp/src/main/java/org/yaqmc/android/`：
 - `core/`：Core 生命周期、JNI 宿主、登录协调与凭据保存。
 - `media/`：系统媒体会话、通知、音频焦点与后台服务。
 - `update/`：版本检查；`OAuthActivity` 承接授权登录。
+- `plugin/`：SAF 文件句柄、包暂存与开发目录适配；`nativeui/NativePlugins` 连接共享插件宿主与原生页面。
+
+插件的包检查、权限、私有数据、API v3 Component、商店和更新事务复用 `YAQMC/YAQMC` 的 Rust 实现，WIT 位于 `wit/yaqmc-provider`。manifest v1 的 API v1/v2/v4/v5/v6 使用上游 Worker bootstrap；声明式贡献映射到 Compose。歌词插件场景在受限的本地 WebView 中运行上游 React 场景、AMLL、CSS 与 Canvas 实现，普通歌词页继续使用 Compose。共享前端源码与固定来源保存在 `nativeApp/src/main/plugin-runtime/upstream/SOURCE.json`。
+
+Gradle 直接使用已提交的插件浏览器资源，不需要 npm。更新共享前端源码或其依赖后执行 `node scripts/build-plugin-runtime.mjs`；`npm test` 检查生成资源同步。WebView 禁止任意导航、文件与网络访问，插件网络和文件操作经 Core 权限及 Android SAF 执行。开发目录通过持久 URI 授权读取，每次建立独立快照交给 Core，不向插件暴露系统路径。Wasm 编译缓存纳入应用缓存查看与清理。
 
 Kotlin 界面经 JNI 调用 Rust Core。Rust 维护实际播放状态与时钟，Media3 负责 Android 系统媒体会话，避免两侧分别维护播放事实。语言、主题、歌词、外观和同时播放偏好保存在 `native-ui` SharedPreferences，图片背景使用应用私有副本。
 

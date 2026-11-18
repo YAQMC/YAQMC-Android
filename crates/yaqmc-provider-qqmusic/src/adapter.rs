@@ -55,6 +55,7 @@ fn share_target_for_song(song: api::Song) -> api::ProviderResult<api::ShareTarge
     let canonical_https_url =
         provider.and_then(|provider| qqmusic_api::canonical_song_url(&provider.track_id));
     Ok(api::ShareTarget {
+        profile_id: api::DEFAULT_PROFILE_ID.to_owned(),
         provider_id: "qqmusic".to_owned(),
         entity_kind: api::ShareEntityKind::Song,
         entity_id: entity_id.to_owned(),
@@ -235,6 +236,7 @@ impl api::ProviderAccount for QQMusicService {
             .map_err(provider_error)?;
         let result = qqmusic::OAuthPrepareResult::from_launch(local_provider, launch);
         Ok(api::OAuthPrepareResult {
+            browser_session: None,
             attempt_id: result.attempt_id,
             url: result.url,
             mobile_url: result.mobile_url,
@@ -560,6 +562,8 @@ mod share_tests {
             audio_formats: Vec::new(),
             playback_capability: None,
             provider: Some(api::ProviderTrackReference {
+                origin_provider_id: None,
+                profile_id: api::DEFAULT_PROFILE_ID.to_owned(),
                 provider_id: "qqmusic".to_owned(),
                 track_id: track_id.to_owned(),
                 numeric_id: None,

@@ -448,6 +448,27 @@ class NativeCatalogStateTest {
         }
     }
 
+    @Test fun lateFavoriteResultCannotEnterAnotherProviderWithTheSameRevision() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val fake = FakeCore { method, params -> when (method) {
+            "provider_account_snapshot" -> authenticated().put("providerId", params.text("providerId", "qqmusic"))
+            "provider_set_favorite" -> { started.complete(Unit); release.await(); JSONObject("""{"status":"applied","authRevision":1,"favorite":true}""") }
+            else -> JSONObject()
+        } }
+        withModel(fake) { model ->
+            val track = writableTrack()
+            main { model.refreshAccount(); model.favorite(track) }
+            started.await()
+            main { model.navigate(NativeRoute("home", providerId = "plugin.provider")) }
+            await { model.account.value.providerId == "plugin.provider" && model.account.value.authenticated }
+            release.complete(Unit)
+            await { model.pendingFavorites.value.isEmpty() }
+            assertFalse(model.favorites.value.containsKey(track.key))
+            assertEquals("qqmusic", fake.calls.single { it.first == "provider_set_favorite" }.second.text("providerId"))
+        }
+    }
+
     private suspend fun withModel(fake: FakeCore, block: suspend (NativeViewModel) -> Unit) {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as Application
         val model = withContext(Dispatchers.Main) { NativeViewModel(app, fake) }

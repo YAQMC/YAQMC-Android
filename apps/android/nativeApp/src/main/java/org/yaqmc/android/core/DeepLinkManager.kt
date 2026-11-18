@@ -10,7 +10,7 @@ import java.util.IdentityHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
 
-data class CatalogSongDeepLink(val providerId: String, val entityId: String)
+data class CatalogSongDeepLink(val providerId: String, val entityId: String, val profileId: String = "default")
 
 /** Android catalog-song deep-link contract. */
 class DeepLinkManager {
@@ -58,13 +58,19 @@ class DeepLinkManager {
             val provider = segments[0]
             if (!providerPattern.matches(provider)) return null
             val fields = uri.rawQuery?.split('&') ?: return null
-            if (fields.size != 1) return null
-            val equals = fields[0].indexOf('=')
-            if (equals <= 0) return null
-            val queryName = decode(fields[0].substring(0, equals)) ?: return null
-            val entity = decode(fields[0].substring(equals + 1)) ?: return null
+            if (fields.size !in 1..2) return null
+            val parameters = mutableMapOf<String, String>()
+            for (field in fields) {
+                val equals = field.indexOf('=')
+                if (equals <= 0) return null
+                val name = decode(field.substring(0, equals)) ?: return null
+                val decoded = decode(field.substring(equals + 1)) ?: return null
+                if (name !in setOf("id", "profileId") || parameters.put(name, decoded) != null) return null
+            }
+            val entity = parameters["id"] ?: return null
+            val profile = parameters["profileId"] ?: "default"
             if (
-                queryName != "id" ||
+                !providerPattern.matches(profile) ||
                 entity.isEmpty() ||
                 entity != entity.trim() ||
                 hasControl(entity) ||
@@ -72,7 +78,7 @@ class DeepLinkManager {
             ) {
                 return null
             }
-            return CatalogSongDeepLink(provider, entity)
+            return CatalogSongDeepLink(provider, entity, profile)
         }
 
         fun isCatalogUri(uri: Uri): Boolean = parse(uri) != null

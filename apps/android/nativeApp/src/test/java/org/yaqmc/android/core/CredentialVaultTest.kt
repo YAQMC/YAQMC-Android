@@ -97,6 +97,22 @@ class CredentialVaultTest {
         assertNull(vault.get("present"))
     }
 
+    @Test
+    fun `component handles fit and remain bound to their plugin namespace`() {
+        val store = MemoryBlobStore()
+        val vault = CredentialVault("top.ltzu.yaqmc", store, CredentialKeyProvider { key() })
+        val name = "plugin-component:${"a".repeat(64)}:cred_${"b".repeat(48)}"
+        assertEquals(135, name.length)
+        val secretKey = key()
+        val durable = CredentialVault("top.ltzu.yaqmc", store, CredentialKeyProvider { secretKey })
+        durable.put(name, "plugin secret")
+        assertEquals("plugin secret", durable.get(name))
+        assertFalse(store.values.getValue(name).contains("plugin secret"))
+        assertFailsWith<IllegalArgumentException> { vault.put("a".repeat(257), "value") }
+        durable.remove(name)
+        assertNull(durable.get(name))
+    }
+
     private class MemoryBlobStore : CredentialBlobStore {
         val values = mutableMapOf<String, String>()
 

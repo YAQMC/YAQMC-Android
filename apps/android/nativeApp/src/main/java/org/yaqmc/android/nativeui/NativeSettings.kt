@@ -47,6 +47,7 @@ internal fun Settings(model: NativeViewModel) {
             "zh-CN" -> R.string.native_chinese; "en-US" -> R.string.native_english; else -> R.string.native_system
         }), "settings-language") { languageDialog = true } }
         item { SettingsSection(stringResource(R.string.native_settings_maintenance)) }
+        item { NativeSettingRow(stringResource(R.string.native_plugins), tag = "settings-plugins") { model.navigate(NativeRoute("plugins")) } }
         item { NativeSettingRow(stringResource(R.string.native_cache_breakdown), tag = "settings-storage") { model.navigate(NativeRoute("storage-settings")) } }
         item { NativeSettingRow(stringResource(R.string.native_diag_title), tag = "settings-diagnostics") { model.navigate(NativeRoute("diagnostics")) } }
         item { NativeSettingRow(stringResource(R.string.native_about_title), tag = "settings-about") { model.navigate(NativeRoute("about")) } }
@@ -111,6 +112,7 @@ internal fun StorageSettings(model: NativeViewModel) {
             item { Text(stringResource(R.string.native_cache_artwork, details.artworkEntries, readableBytes(details.artworkBytes))) }
             item { Text(stringResource(R.string.native_cache_metadata, details.metadataEntries)) }
             item { Text(stringResource(R.string.native_cache_lyrics, details.lyricEntries)) }
+            item { Text(stringResource(R.string.native_plugin_cache, details.componentEntries, readableBytes(details.componentBytes))) }
             item { Text(stringResource(R.string.native_cache_limits, readableBytes(details.mediaLimitBytes), readableBytes(details.artworkLimitBytes)), style = MaterialTheme.typography.bodySmall) }
         }
         item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

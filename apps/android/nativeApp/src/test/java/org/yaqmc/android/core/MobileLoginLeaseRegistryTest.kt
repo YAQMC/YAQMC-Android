@@ -53,4 +53,16 @@ class MobileLoginLeaseRegistryTest {
         assertFalse(h.registry.hasProvider("qqmusic"))
         assertEquals(1, h.calls.size)
     }
+
+    @Test fun `different providers can use the same opaque attempt identifier`() {
+        val h = Harness()
+        h.registry.adopt(h.attempt("same"))
+        h.registry.adopt(h.attempt("same").copy(providerId = "plugin.provider"))
+        assertEquals(2, h.tasks.size)
+        h.tick(); h.tick()
+        assertEquals(setOf("qqmusic", "plugin.provider"), h.calls.map { it.providerId }.toSet())
+        h.replies[0]("authenticated", null, null)
+        assertFalse(h.registry.hasProvider("qqmusic"))
+        assertTrue(h.registry.hasProvider("plugin.provider"))
+    }
 }

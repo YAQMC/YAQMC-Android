@@ -17,5 +17,5 @@ rustls = { version = "0.23.43", default-features = false, features = ["aws_lc_rs
 serde_json = "1"
 tracing = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
-yaqmc-core = { path = "../yaqmc-core", default-features = false }
+yaqmc-core = { path = "../yaqmc-core", default-features = false, features = ["plugins"] }
 yaqmc-protocol = { path = "../yaqmc-protocol" }

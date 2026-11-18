@@ -13,7 +13,8 @@ use crate::statistics::{StatisticsChanged, StatisticsExportRequest};
 use crate::CoreHandle;
 use yaqmc_provider_api::{
     CollectPlaylistRequest, CreatePlaylistRequest, DeletePlaylistRequest, FavoriteMutationRequest,
-    PlaylistTrackMutationRequest, ProviderCommandError, ProviderResult, RenamePlaylistRequest,
+    PlaylistTrackMutationRequest, ProviderCommandError, ProviderProfileKey, ProviderResult,
+    RenamePlaylistRequest,
 };
 
 use super::ops;
@@ -34,6 +35,9 @@ use super::types::{
 };
 use super::HostDispatchHooks;
 
+#[cfg(feature = "plugins")]
+mod plugins;
+
 pub const CORE_DISPATCH_METHODS: &[&str] = &[
     "platform_diagnostics",
     "platform_export_diagnostics",
@@ -46,12 +50,15 @@ pub const CORE_DISPATCH_METHODS: &[&str] = &[
     "provider_area",
     "provider_library",
     "provider_search",
+    "provider_search_cancel",
     "provider_song",
     "provider_album",
     "provider_artist",
     "provider_artist_catalog",
     "provider_playlist",
     "provider_lyrics",
+    "provider_comments",
+    "provider_comments_cancel",
     "provider_recommendation_next",
     "provider_cache_artwork",
     "provider_set_preferred_quality",
@@ -76,6 +83,8 @@ pub const CORE_DISPATCH_METHODS: &[&str] = &[
     "provider_auth_refresh",
     "provider_sign_out",
     "provider_cache_stats",
+    "app_cache_stats",
+    "app_clear_cache",
     "provider_clear_cache",
     "qqmusic_status",
     "qqmusic_home",
@@ -164,6 +173,17 @@ pub const CORE_DISPATCH_METHODS: &[&str] = &[
     "issue_reporter_preview",
     "issue_reporter_validate_url",
     "plugin_list",
+    "plugin_update_policy_get",
+    "plugin_update_policy_set",
+    "plugin_update_check",
+    "plugin_update_prepare",
+    "plugin_update_apply",
+    "plugin_update_status",
+    "plugin_update_cancel",
+    "plugin_update_runtime_ready",
+    "plugin_update_editing",
+    "plugin_store_search",
+    "plugin_store_releases",
     "plugin_inspect_path",
     "plugin_install",
     "plugin_set_enabled",
@@ -173,14 +193,18 @@ pub const CORE_DISPATCH_METHODS: &[&str] = &[
     "plugin_active_resources",
     "plugin_diagnostics",
     "plugin_runtime_start",
+    "plugin_runtime_authorize",
+    "plugin_runtime_ready",
     "plugin_runtime_stop",
     "plugin_mark_failed",
     "plugin_bridge",
+    "plugin_local_files",
     "plugin_install_unpacked",
     "plugin_reload",
     "plugin_read_asset",
     "plugin_settings_get",
     "plugin_settings_set",
+    "core_shutdown_cancel",
     "core_ping",
     "platform_attach",
     "core_shutdown_prepare",
@@ -289,6 +313,58 @@ fn parse<T: DeserializeOwned>(params: &Value) -> Result<T, DispatchError> {
         .map_err(|error| DispatchError::InvalidParams(error.to_string()))
 }
 
+fn provider_scope(core: &CoreHandle, params: &Value) -> Result<ProviderProfileKey, DispatchError> {
+    let provider_id = params.get("providerId").and_then(Value::as_str);
+    let profile_id = match params.get("profileId") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(profile_id)) => Some(profile_id.as_str()),
+        Some(_) => {
+            return Err(DispatchError::InvalidParams(
+                "profileId must be a string".to_owned(),
+            ));
+        }
+    };
+    provider_command(core.providers().resolve_profile(provider_id, profile_id))
+}
+
+fn cancellable_read<'a>(
+    core: &'a CoreHandle,
+    params: &Value,
+    scope: &ProviderProfileKey,
+    origin: WindowOrigin,
+) -> Result<super::comment_requests::ReadGuard<'a>, DispatchError> {
+    let request_id = match params.get("requestId") {
+        None => None,
+        Some(Value::String(id)) => Some(id.as_str()),
+        _ => return Err(DispatchError::InvalidParams("invalid request ID".into())),
+    };
+    provider_command(core.comment_requests.begin(scope, origin, request_id))
+}
+
+fn parse_provider<T: DeserializeOwned>(
+    core: &CoreHandle,
+    params: &Value,
+) -> Result<T, DispatchError> {
+    let parsed = parse(params)?;
+    provider_scope(core, params)?;
+    Ok(parsed)
+}
+
+/// Resolve the complete provider/profile key immediately before capability
+/// selection.  Generic IPC commands must never validate a profile and then
+/// select a capability through the provider's default façade.
+macro_rules! require_provider_for_scope {
+    ($core:expr, $params:expr, $provider_id:expr, $method:ident) => {{
+        let scope = provider_scope($core, $params)?;
+        debug_assert_eq!(scope.provider_id.as_str(), ($provider_id).as_str());
+        provider_command(
+            $core
+                .providers()
+                .$method(Some(&scope.provider_id), Some(&scope.profile_id)),
+        )?
+    }};
+}
+
 fn ok<T: Serialize>(value: T) -> Result<Value, DispatchError> {
     serde_json::to_value(value).map_err(|error| DispatchError::Command {
         message: error.to_string(),
@@ -361,7 +437,7 @@ pub async fn dispatch(
             limit: spec.request_cap,
         });
     }
-    let result = invoke_core(core, host, method_name, params).await?;
+    let result = invoke_core(core, host, origin, method_name, params).await?;
     let response_len = payload_len(&result);
     if !spec.accepts_response_bytes(response_len) {
         return Err(DispatchError::PayloadTooLarge {
@@ -376,10 +452,21 @@ pub async fn dispatch(
 async fn invoke_core(
     core: &CoreHandle,
     host: &dyn HostDispatchHooks,
+    origin: WindowOrigin,
     method_name: &str,
     params: Value,
 ) -> Result<Value, DispatchError> {
+    #[cfg(feature = "plugins")]
+    if method_name.starts_with("plugin_") {
+        return plugins::dispatch(core, host, method_name, params).await;
+    }
+    #[cfg(not(feature = "plugins"))]
+    if method_name.starts_with("plugin_") {
+        return Err(DispatchError::Unavailable { feature: "plugins" });
+    }
     match method_name {
+        "app_cache_stats" => cmd(ops::app_cache_stats(core, false)),
+        "app_clear_cache" => cmd(ops::app_cache_stats(core, true)),
         "platform_diagnostics" => ok(ops::live_platform_diagnostics(core, host)),
         "platform_export_diagnostics" => cmd(ops::platform_export_diagnostics(core, host)),
         "audio_output_devices" => cmd(ops::audio_output_devices(&core.player())),
@@ -393,42 +480,65 @@ async fn invoke_core(
         }
         "provider_list" => ok(core.providers().descriptors()),
         "provider_status" => {
-            let ProviderIdParams { provider_id } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+            let ProviderIdParams { provider_id, .. } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             ok(catalog.catalog_status().await)
         }
         "provider_home" => {
             let ProviderRefreshParams {
                 provider_id,
                 refresh,
-            } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             provider(catalog.catalog_home(refresh).await)
         }
         "provider_discover" => {
             let ProviderRefreshParams {
                 provider_id,
                 refresh,
-            } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             provider(catalog.catalog_discover(refresh).await)
         }
         "provider_area" => {
             let ProviderAreaParams {
                 provider_id,
                 enc_area,
-            } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             provider(catalog.catalog_area(enc_area).await)
         }
         "provider_library" => {
-            let ProviderIdParams { provider_id } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+            let ProviderIdParams { provider_id, .. } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             ok(catalog.catalog_library())
         }
         "provider_search" => {
@@ -438,27 +548,64 @@ async fn invoke_core(
                 kind,
                 page,
                 limit,
-            } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
-            provider(catalog.catalog_search(query, kind, page, limit).await)
+                ..
+            } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
+            let scope = provider_scope(core, &params)?;
+            let read = cancellable_read(core, &params, &scope, origin)?;
+            provider(tokio::select! {
+                biased;
+                _ = read.token.cancelled() => Err(ProviderCommandError::adapter("search cancelled")),
+                result = catalog.catalog_search(query, kind, page, limit) => result,
+            })
+        }
+        "provider_search_cancel" => {
+            let scope = provider_scope(core, &params)?;
+            let id = params
+                .get("requestId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DispatchError::InvalidParams("missing search request ID".into()))?;
+            provider(core.comment_requests.cancel(&scope, origin, id))
         }
         "provider_song" => {
-            let ProviderEntityParams { provider_id, id } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+            let ProviderEntityParams {
+                provider_id, id, ..
+            } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             provider(catalog.catalog_song(id).await)
         }
         "provider_album" => {
-            let ProviderEntityParams { provider_id, id } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+            let ProviderEntityParams {
+                provider_id, id, ..
+            } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             provider(catalog.catalog_album(id).await)
         }
         "provider_artist" => {
-            let ProviderEntityParams { provider_id, id } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+            let ProviderEntityParams {
+                provider_id, id, ..
+            } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             provider(catalog.catalog_artist(id).await)
         }
         "provider_artist_catalog" => {
@@ -468,49 +615,120 @@ async fn invoke_core(
                 kind,
                 page,
                 limit,
-            } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             provider(catalog.catalog_artist_page(id, kind, page, limit).await)
         }
         "provider_playlist" => {
-            let ProviderEntityParams { provider_id, id } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+            let ProviderEntityParams {
+                provider_id, id, ..
+            } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             provider(catalog.catalog_playlist(id).await)
         }
         "provider_lyrics" => {
-            let ProviderEntityParams { provider_id, id } = parse(&params)?;
-            let lyrics = provider_command(core.providers().require_lyrics_provider(&provider_id))?;
-            provider(lyrics.lyrics_for_song(id).await)
+            let ProviderEntityParams {
+                provider_id, id, ..
+            } = parse_provider(core, &params)?;
+            let lyrics = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_lyrics_provider_for_profile
+            );
+            let scope = provider_scope(core, &params)?;
+            let read = cancellable_read(core, &params, &scope, origin)?;
+            provider(tokio::select! {
+                biased;
+                _ = read.token.cancelled() => Err(ProviderCommandError::adapter("lyric read cancelled")),
+                result = lyrics.lyrics_for_song(id) => result,
+            })
+        }
+        "provider_comments" => {
+            let ProviderNamedRequest::<yaqmc_provider_api::SongCommentsRequest> {
+                provider_id,
+                request,
+                ..
+            } = parse_provider(core, &params)?;
+            let comments = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_comments_provider_for_profile
+            );
+            if let Err(error) = request.validate() {
+                return provider::<yaqmc_provider_api::SongCommentsPage>(Err(error));
+            }
+            let scope = provider_scope(core, &params)?;
+            let read = cancellable_read(core, &params, &scope, origin)?;
+            provider(
+                comments
+                    .song_comments_with_cancellation(request, read.token.clone())
+                    .await
+                    .and_then(|page| page.bounded()),
+            )
+        }
+        "provider_comments_cancel" => {
+            let scope = provider_scope(core, &params)?;
+            let id = params
+                .get("requestId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DispatchError::InvalidParams("missing comment request ID".into()))?;
+            provider(core.comment_requests.cancel(&scope, origin, id))
         }
         "provider_recommendation_next" => {
             let ProviderNamedRequest::<yaqmc_provider_api::RecommendationRequest> {
                 provider_id,
                 request,
-            } = parse(&params)?;
+                ..
+            } = parse_provider(core, &params)?;
+            let scope = provider_scope(core, &params)?;
+            debug_assert_eq!(scope.provider_id, provider_id);
             provider(
                 core.providers()
-                    .recommendation_next(&provider_id, request)
+                    .recommendation_next_for_profile(&scope, request)
                     .await,
             )
         }
         "provider_cache_artwork" => {
-            let ProviderUrlParams { provider_id, url } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+            let ProviderUrlParams {
+                provider_id, url, ..
+            } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             provider(catalog.catalog_artwork_data_uri(url).await)
         }
         "provider_set_preferred_quality" => {
             let ProviderQualityParams {
                 provider_id,
                 quality,
-            } = parse(&params)?;
+                ..
+            } = parse_provider(core, &params)?;
+            let scope = provider_scope(core, &params)?;
+            debug_assert_eq!(scope.provider_id, provider_id);
             let playback =
-                provider_command(core.providers().require_playback_provider(&provider_id))?;
+                provider_command(core.providers().require_playback_provider_for_profile(
+                    Some(&scope.provider_id),
+                    Some(&scope.profile_id),
+                ))?;
             provider(
                 ops::provider_set_preferred_quality(
-                    &provider_id,
+                    &scope,
                     playback.as_ref(),
                     &core.player(),
                     quality,
@@ -522,12 +740,18 @@ async fn invoke_core(
             let ProviderQualityParams {
                 provider_id,
                 quality,
-            } = parse(&params)?;
+                ..
+            } = parse_provider(core, &params)?;
+            let scope = provider_scope(core, &params)?;
+            debug_assert_eq!(scope.provider_id, provider_id);
             let playback =
-                provider_command(core.providers().require_playback_provider(&provider_id))?;
+                provider_command(core.providers().require_playback_provider_for_profile(
+                    Some(&scope.provider_id),
+                    Some(&scope.profile_id),
+                ))?;
             provider(
                 ops::provider_set_current_quality(
-                    &provider_id,
+                    &scope,
                     playback.as_ref(),
                     &core.player(),
                     quality,
@@ -536,21 +760,33 @@ async fn invoke_core(
             )
         }
         "provider_account_login_methods" => {
-            let ProviderIdParams { provider_id } = parse(&params)?;
-            let account =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+            let ProviderIdParams { provider_id, .. } = parse_provider(core, &params)?;
+            let account = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(account.account_login_methods().await)
         }
         "provider_account_snapshot" => {
-            let ProviderIdParams { provider_id } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+            let ProviderIdParams { provider_id, .. } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             ok(capability.provider_account().account_snapshot().await)
         }
         "provider_account_refresh" => {
-            let ProviderIdParams { provider_id } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+            let ProviderIdParams { provider_id, .. } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(capability.provider_account().refresh_account().await)
         }
         "provider_favorite_songs" => {
@@ -558,9 +794,14 @@ async fn invoke_core(
                 provider_id,
                 cursor,
                 limit,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(
                 capability
                     .provider_account()
@@ -573,9 +814,14 @@ async fn invoke_core(
                 provider_id,
                 cursor,
                 limit,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(
                 capability
                     .provider_account()
@@ -586,12 +832,33 @@ async fn invoke_core(
         "provider_account_playlist_tracks" => {
             let ProviderPlaylistTracksParams {
                 provider_id,
+                profile_id,
                 playlist,
                 cursor,
                 limit,
-            } = parse(&params)?;
+            } = parse_provider(core, &params)?;
+            let scope = provider_command(
+                core.providers()
+                    .resolve_profile(Some(&provider_id), profile_id.as_deref()),
+            )?;
+            let playlist_scope =
+                ProviderProfileKey::new(&playlist.provider_id, &playlist.profile_id).map_err(
+                    |error| {
+                        provider_error(ProviderCommandError::invalid_request(format!(
+                            "invalid account playlist scope: {error}"
+                        )))
+                    },
+                )?;
+            if playlist_scope != scope {
+                return Err(provider_error(ProviderCommandError::invalid_request(
+                    "account playlist scope does not match the requested profile",
+                )));
+            }
             let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                provider_command(core.providers().require_account_provider_for_profile(
+                    Some(&scope.provider_id),
+                    Some(&scope.profile_id),
+                ))?;
             provider(
                 capability
                     .provider_account()
@@ -604,9 +871,14 @@ async fn invoke_core(
                 provider_id,
                 cursor,
                 limit,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(
                 capability
                     .provider_account()
@@ -618,36 +890,56 @@ async fn invoke_core(
             let ProviderNamedRequest::<FavoriteMutationRequest> {
                 provider_id,
                 request,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(capability.provider_account().set_favorite(request).await)
         }
         "provider_create_playlist" => {
             let ProviderNamedRequest::<CreatePlaylistRequest> {
                 provider_id,
                 request,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(capability.provider_account().create_playlist(request).await)
         }
         "provider_rename_playlist" => {
             let ProviderNamedRequest::<RenamePlaylistRequest> {
                 provider_id,
                 request,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(capability.provider_account().rename_playlist(request).await)
         }
         "provider_add_playlist_track" => {
             let ProviderNamedRequest::<PlaylistTrackMutationRequest> {
                 provider_id,
                 request,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(
                 capability
                     .provider_account()
@@ -659,9 +951,14 @@ async fn invoke_core(
             let ProviderNamedRequest::<PlaylistTrackMutationRequest> {
                 provider_id,
                 request,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(
                 capability
                     .provider_account()
@@ -673,18 +970,28 @@ async fn invoke_core(
             let ProviderNamedRequest::<DeletePlaylistRequest> {
                 provider_id,
                 request,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(capability.provider_account().delete_playlist(request).await)
         }
         "provider_set_playlist_collected" => {
             let ProviderNamedRequest::<CollectPlaylistRequest> {
                 provider_id,
                 request,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(
                 capability
                     .provider_account()
@@ -696,12 +1003,21 @@ async fn invoke_core(
             let ProviderAuthStartParams {
                 provider_id,
                 mobile,
-            } = parse(&params)?;
+                ..
+            } = parse_provider(core, &params)?;
+            let profile = provider_scope(core, &params)?;
             core.continuation()
-                .end(ContinuationTerminalReason::AccountChanged)
+                .end_for_provider(
+                    &profile.provider_id,
+                    ContinuationTerminalReason::AccountChanged,
+                )
                 .await;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             if mobile {
                 provider(capability.provider_account().start_mobile_login().await)
             } else {
@@ -713,9 +1029,15 @@ async fn invoke_core(
                 provider_id,
                 attempt_id,
                 owner_lease_id,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let profile = provider_scope(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             let account = capability.provider_account();
             let result = if account.is_oauth_login(&attempt_id).await
                 && !host.oauth_window_is_live(&attempt_id)
@@ -725,7 +1047,7 @@ async fn invoke_core(
                 account.heartbeat_qr_login(attempt_id, owner_lease_id).await
             };
             core.continuation()
-                .validate_account_generation(&provider_id)
+                .validate_account_generation(&profile.provider_id)
                 .await;
             provider(result)
         }
@@ -733,16 +1055,22 @@ async fn invoke_core(
             let ProviderAttemptParams {
                 provider_id,
                 attempt_id,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let profile = provider_scope(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             let result = capability
                 .provider_account()
                 .cancel_qr_login(attempt_id.clone())
                 .await;
             host.close_oauth_window(&attempt_id);
             core.continuation()
-                .validate_account_generation(&provider_id)
+                .validate_account_generation(&profile.provider_id)
                 .await;
             provider(result)
         }
@@ -750,37 +1078,59 @@ async fn invoke_core(
             let ProviderOptionalAttemptParams {
                 provider_id,
                 attempt_id,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let profile = provider_scope(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             let result = capability
                 .provider_account()
                 .refresh_qr_login(attempt_id)
                 .await;
             core.continuation()
-                .validate_account_generation(&provider_id)
+                .validate_account_generation(&profile.provider_id)
                 .await;
             provider(result)
         }
         "provider_sign_out" => {
-            let ProviderIdParams { provider_id } = parse(&params)?;
+            let ProviderIdParams { provider_id, .. } = parse_provider(core, &params)?;
+            let profile = provider_scope(core, &params)?;
             core.continuation()
-                .end(ContinuationTerminalReason::AccountChanged)
+                .end_for_provider(
+                    &profile.provider_id,
+                    ContinuationTerminalReason::AccountChanged,
+                )
                 .await;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(capability.provider_account().sign_out().await)
         }
         "provider_cache_stats" => {
-            let ProviderIdParams { provider_id } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+            let ProviderIdParams { provider_id, .. } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             provider(catalog.catalog_cache_stats())
         }
         "provider_clear_cache" => {
-            let ProviderIdParams { provider_id } = parse(&params)?;
-            let catalog =
-                provider_command(core.providers().require_catalog_provider(&provider_id))?;
+            let ProviderIdParams { provider_id, .. } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
             provider(catalog.catalog_clear_cache())
         }
         "qqmusic_status" => ok(core.qq_music().status().await),
@@ -836,8 +1186,16 @@ async fn invoke_core(
             provider(core.qq_music().lyrics(song_id).await)
         }
         "catalog_share_song" => {
-            let ShareSongParams { provider_id, id } = parse(&params)?;
-            provider(core.providers().share_song(&provider_id, id).await)
+            let ShareSongParams {
+                provider_id,
+                profile_id,
+                id,
+            } = parse(&params)?;
+            provider(
+                core.providers()
+                    .share_song(&provider_id, profile_id.as_deref(), id)
+                    .await,
+            )
         }
         "qqmusic_cache_artwork" => {
             let UrlParams { url } = parse(&params)?;
@@ -982,7 +1340,7 @@ async fn invoke_core(
             core.continuation()
                 .end(ContinuationTerminalReason::QueueReplaced)
                 .await;
-            core.qq_music().remember_songs(&tracks).await;
+            core.providers().remember_scoped_songs(&tracks).await;
             ok(core.player().hydrate_queue(tracks).await)
         }
         "player_play_tracks" => {
@@ -990,7 +1348,9 @@ async fn invoke_core(
             core.continuation()
                 .end(ContinuationTerminalReason::QueueReplaced)
                 .await;
-            core.qq_music().remember_songs(&request.tracks).await;
+            core.providers()
+                .remember_scoped_songs(&request.tracks)
+                .await;
             cmd(core
                 .player()
                 .play_tracks(request)
@@ -1214,6 +1574,8 @@ async fn invoke_core(
         "core_ping" => ok(json!({})),
         "platform_attach" => apply_platform_attach(core, parse(&params)?),
         "core_shutdown_prepare" => {
+            #[cfg(feature = "plugins")]
+            cmd(core.plugins().prepare_app_restart().await)?;
             core.statistics().shutdown();
             let snapshot = core.player().snapshot().await;
             core.storage()
@@ -1224,6 +1586,11 @@ async fn invoke_core(
                     details: None,
                 })?;
             ok(json!({ "ok": true }))
+        }
+        "core_shutdown_cancel" => {
+            #[cfg(feature = "plugins")]
+            core.plugins().cancel_app_restart();
+            Ok(Value::Null)
         }
         "auth_oauth_prepare" => {
             let OAuthPrepareParams { provider_kind } = parse(&params)?;
@@ -1258,12 +1625,21 @@ async fn invoke_core(
             let ProviderOAuthPrepareParams {
                 provider_id,
                 method_id,
-            } = parse(&params)?;
+                ..
+            } = parse_provider(core, &params)?;
+            let profile = provider_scope(core, &params)?;
             core.continuation()
-                .end(ContinuationTerminalReason::AccountChanged)
+                .end_for_provider(
+                    &profile.provider_id,
+                    ContinuationTerminalReason::AccountChanged,
+                )
                 .await;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             provider(capability.account_prepare_login(&method_id).await)
         }
         "provider_auth_oauth_complete" => {
@@ -1271,17 +1647,34 @@ async fn invoke_core(
                 provider_id,
                 attempt_id,
                 callback_url,
-            } = parse(&params)?;
+                browser_session_cookies,
+                ..
+            } = parse_provider(core, &params)?;
+            let profile = provider_scope(core, &params)?;
             let callback_url = reqwest::Url::parse(&callback_url)
                 .map_err(|error| DispatchError::InvalidParams(error.to_string()))?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
-            let result = capability
-                .provider_account()
-                .complete_oauth_login(&attempt_id, callback_url)
-                .await;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
+            let result = match browser_session_cookies {
+                Some(cookies) => {
+                    capability
+                        .provider_account()
+                        .complete_browser_session_login(&attempt_id, callback_url, cookies)
+                        .await
+                }
+                None => {
+                    capability
+                        .provider_account()
+                        .complete_oauth_login(&attempt_id, callback_url)
+                        .await
+                }
+            };
             core.continuation()
-                .validate_account_generation(&provider_id)
+                .validate_account_generation(&profile.provider_id)
                 .await;
             provider(result)
         }
@@ -1289,15 +1682,21 @@ async fn invoke_core(
             let ProviderAttemptParams {
                 provider_id,
                 attempt_id,
-            } = parse(&params)?;
-            let capability =
-                provider_command(core.providers().require_account_provider(&provider_id))?;
+                ..
+            } = parse_provider(core, &params)?;
+            let profile = provider_scope(core, &params)?;
+            let capability = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_account_provider_for_profile
+            );
             let result = capability
                 .provider_account()
                 .cancel_oauth_login(&attempt_id)
                 .await;
             core.continuation()
-                .validate_account_generation(&provider_id)
+                .validate_account_generation(&profile.provider_id)
                 .await;
             provider(result)
         }

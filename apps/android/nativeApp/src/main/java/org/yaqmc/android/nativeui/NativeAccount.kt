@@ -41,6 +41,7 @@ internal fun AccountMembership(account: AccountUi) {
 @Composable
 internal fun AccountLibraryNotice(account: AccountUi, model: NativeViewModel) {
     if (account.authenticated) return
+    val route by model.route.collectAsStateWithLifecycle()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.testTag("library-account-notice")) {
         Text(when (account.state) {
             "guest" -> stringResource(R.string.native_library_login)
@@ -48,7 +49,7 @@ internal fun AccountLibraryNotice(account: AccountUi, model: NativeViewModel) {
             else -> accountLabel(account.state, account.upstreamCode)
         })
         if (account.state == "restoring-session" || account.loginPending) LinearProgressIndicator(Modifier.fillMaxWidth())
-        TextButton(onClick = { model.navigate(NativeRoute("account")) }) { Text(stringResource(R.string.native_account_settings)) }
+        TextButton(onClick = { model.navigate(NativeRoute("account", providerId = route.providerId, profileId = route.profileId)) }) { Text(stringResource(R.string.native_account_settings)) }
     }
 }
 
@@ -63,7 +64,7 @@ internal fun PlaylistActions(model: NativeViewModel, route: NativeRoute, page: C
     val original = page.raw.optJSONObject("summary") ?: if (route.kind == "account-playlist") runCatching { JSONObject(route.playlist) }.getOrNull() else page.raw
     val summary = summaries[route.id] ?: original ?: return
     val busy = route.id in pending
-    val write = account.authenticated && account.capabilities.optBoolean("playlistWrite")
+    val write = account.authenticated && account.providerId == route.providerId && account.profileId == route.profileId && account.capabilities.optBoolean("playlistWrite")
     var renaming by rememberSaveable(route.id) { mutableStateOf(false) }
     var draft by rememberSaveable(route.id) { mutableStateOf("") }
     var confirmDelete by rememberSaveable(route.id) { mutableStateOf(false) }
@@ -76,7 +77,7 @@ internal fun PlaylistActions(model: NativeViewModel, route: NativeRoute, page: C
             if (summary.canEdit("canAddTracks")) OutlinedButton(enabled = write && !busy && player.current?.writable == true, onClick = { player.current?.let { model.mutatePlaylist("add", summary, track = it) } }) { Text(stringResource(R.string.native_add_current)) }
             if (summary.canEdit("canRemoveTracks")) OutlinedButton(enabled = write && !busy && player.current?.writable == true, onClick = { confirmRemove = player.current }) { Text(stringResource(R.string.native_remove_current)) }
             if (summary.canEdit("canDelete")) OutlinedButton(enabled = write && !busy, onClick = { confirmDelete = true }) { Text(stringResource(R.string.native_delete_playlist)) }
-            if (route.id.startsWith("qqmusic:playlist:") && summary.text("ownership") != "owned") {
+            if (summary.text("ownership") != "owned" && (route.providerId == "qqmusic" || write)) {
                 val collected = summary.text("ownership") == "collected"
                 OutlinedButton(enabled = !busy && (!account.authenticated || write), onClick = { model.mutatePlaylist("collect", summary, collected = !collected) }) {
                     Text(stringResource(if (collected) R.string.native_uncollect_playlist else R.string.native_collect_playlist))

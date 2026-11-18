@@ -17,7 +17,8 @@ use crate::{
     CHANNEL_APP_OPEN_SETTINGS, CHANNEL_CORE_LOG, CHANNEL_HOST_COMMAND, CHANNEL_HOST_CORE_STATUS,
     CHANNEL_HOST_UPDATE, CHANNEL_LYRICS_DOCUMENT, CHANNEL_LYRICS_PROJECTION,
     CHANNEL_LYRICS_SURFACE_CLOSED, CHANNEL_LYRICS_SURFACE_INTERACTION, CHANNEL_PLAYER_SNAPSHOT,
-    CHANNEL_PLUGIN_CHANGED, CHANNEL_PREFERENCES_CHANGED, CORE_EVENT_CHANNELS,
+    CHANNEL_PLUGIN_CHANGED, CHANNEL_PLUGIN_UPDATE_PROGRESS, CHANNEL_PREFERENCES_CHANGED,
+    CHANNEL_PROVIDER_LOCAL_FILES, CHANNEL_PROVIDER_PROFILES_CHANGED, CORE_EVENT_CHANNELS,
     DEFAULT_METHOD_PAYLOAD_BYTES, FRAME_HARD_CAP_BYTES, HANDSHAKE_TIMEOUT, HOST_EVENT_CHANNELS,
     PROTOCOL_VERSION, SHUTDOWN_TIMEOUT,
 };
@@ -221,6 +222,21 @@ fn events() -> Value {
             seq: 5,
             channel: CHANNEL_PLUGIN_CHANGED.to_owned(),
             payload: json!({ "pluginId": "example", "enabled": true }),
+        }),
+        CHANNEL_PLUGIN_UPDATE_PROGRESS: to_value(&CoreMessage::Event {
+            seq: 6,
+            channel: CHANNEL_PLUGIN_UPDATE_PROGRESS.to_owned(),
+            payload: json!({"operationId":"operation-0","pluginId":"example","phase":"prepared","preview":null,"downloadedBytes":0,"totalBytes":null,"error":null,"runtimeChanged":false}),
+        }),
+        CHANNEL_PROVIDER_LOCAL_FILES: to_value(&CoreMessage::Event {
+            seq: 0,
+            channel: CHANNEL_PROVIDER_LOCAL_FILES.to_owned(),
+            payload: json!({"release":"example-session"}),
+        }),
+        CHANNEL_PROVIDER_PROFILES_CHANGED: to_value(&CoreMessage::Event {
+            seq: 10,
+            channel: CHANNEL_PROVIDER_PROFILES_CHANGED.to_owned(),
+            payload: json!([{"providerId":"qqmusic","profileId":"default","label":"QQ Music","enabled":true}]),
         }),
         CHANNEL_PREFERENCES_CHANGED: to_value(&CoreMessage::Event {
             seq: 6,

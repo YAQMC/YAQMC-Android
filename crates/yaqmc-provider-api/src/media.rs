@@ -221,6 +221,18 @@ pub enum PlaybackSourceError {
     DecoderUnsupported,
     #[error("the active account is not entitled to this track or quality")]
     EntitlementInsufficient,
+    #[error("this track requires a music membership")]
+    MembershipRequired,
+    #[error("this track requires a separate purchase")]
+    PurchaseRequired,
+    #[error("this track is restricted by the platform's licensing")]
+    CopyrightRestricted,
+    #[error("the music plugin does not support this playback operation")]
+    ProviderUnsupported,
+    #[error("the music plugin is unavailable or not configured")]
+    ProviderUnavailable,
+    #[error("the music plugin failed to resolve a valid playback source")]
+    ProviderFailure,
     #[error("the active account entitlement could not be confirmed")]
     EntitlementUnknown,
     #[error("the provider session expired")]
@@ -239,9 +251,9 @@ pub enum PlaybackSourceError {
 pub trait PlaybackSourceResolver: Send + Sync {
     async fn resolve(&self, song: &Song) -> Result<ResolvedPlaybackSource, PlaybackSourceError>;
 
-    /// Resolve a strictly lower quality after source preparation failed.
-    /// Account rights remain enforced by the provider. Core records the actual
-    /// failure reason and only marks resources unavailable after a missing-file response.
+    /// Retry an automatic selection with a strictly lower quality after its
+    /// refreshed media URL is still unavailable. Account rights remain enforced
+    /// by the provider; providers without this recovery retain the original error.
     async fn resolve_unavailable_fallback(
         &self,
         _song: &Song,

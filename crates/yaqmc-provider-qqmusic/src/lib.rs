@@ -85,13 +85,14 @@ mod tests {
         assert!(capabilities.recommendations().is_some());
         assert!(capabilities.lyrics().is_some());
         let legacy = capabilities.legacy_provider().expect("legacy provider");
-        assert!(std::ptr::eq(
+        assert_eq!(
             capabilities
                 .account()
                 .expect("account capability")
-                .provider_account(),
-            legacy.account()
-        ));
+                .provider_account()
+                .account_generation(),
+            legacy.account().account_generation()
+        );
         assert_eq!(legacy.id(), "qqmusic");
     }
 
@@ -129,6 +130,8 @@ mod tests {
             audio_formats: Vec::new(),
             playback_capability: None,
             provider: Some(ProviderTrackReference {
+                origin_provider_id: None,
+                profile_id: yaqmc_provider_api::DEFAULT_PROFILE_ID.to_owned(),
                 provider_id: "plugin.missing".to_owned(),
                 track_id: "1".to_owned(),
                 numeric_id: None,
@@ -139,7 +142,7 @@ mod tests {
 
         assert!(matches!(
             registry.resolve(&song).await,
-            Err(PlaybackSourceError::TrackUnavailable)
+            Err(PlaybackSourceError::ProviderUnavailable)
         ));
     }
 

@@ -265,7 +265,7 @@ internal fun NativeLyricPresetPreview(
 }
 
 @Composable
-internal fun NativeLyricPresets(settings: NativeLyricPresetPreferences, change: (NativeLyricPresetPreferences) -> Unit) {
+internal fun NativeLyricPresets(settings: NativeLyricPresetPreferences, change: (NativeLyricPresetPreferences) -> Unit, pluginOptions: @Composable () -> Unit = {}) {
     val active = settings.current()
     var edits by remember(active) { mutableStateOf(NativeLyricPresetEditHistory(active)) }
     val draft = edits.current
@@ -281,6 +281,7 @@ internal fun NativeLyricPresets(settings: NativeLyricPresetPreferences, change: 
         Modifier.fillMaxSize().testTag("lyric-presets"),
         contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        item { pluginOptions() }
         item {
             Text(stringResource(R.string.native_preset_select), style = MaterialTheme.typography.titleMedium)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

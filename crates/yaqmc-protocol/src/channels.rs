@@ -6,6 +6,7 @@ pub const CHANNEL_API_EVENT: &str = "api://event";
 pub const CHANNEL_PLAYER_SNAPSHOT: &str = "player://snapshot";
 pub const CHANNEL_LYRICS_PROJECTION: &str = "lyrics://projection";
 pub const CHANNEL_LYRICS_DOCUMENT: &str = "lyrics://document";
+pub const CHANNEL_PLUGIN_UPDATE_PROGRESS: &str = "plugin://update-progress";
 pub const CHANNEL_PLUGIN_CHANGED: &str = "plugin://changed";
 pub const CHANNEL_PREFERENCES_CHANGED: &str = "preferences://changed";
 pub const CHANNEL_LYRICS_SURFACE_CLOSED: &str = "lyrics://surface-closed";
@@ -13,10 +14,13 @@ pub const CHANNEL_LYRICS_SURFACE_INTERACTION: &str = "lyrics://surface-interacti
 pub const CHANNEL_APP_OPEN_SETTINGS: &str = "app://open-settings";
 pub const CHANNEL_APP_OPEN_CATALOG_SONG: &str = "app://open-catalog-song";
 pub const CHANNEL_HOST_COMMAND: &str = "host://command";
+/// Native host only. Contains capability tokens and must never be forwarded to renderers.
+pub const CHANNEL_PROVIDER_LOCAL_FILES: &str = "host://provider-local-files";
 pub const CHANNEL_HOST_CORE_STATUS: &str = "host://core-status";
 pub const CHANNEL_HOST_UPDATE: &str = "host://update";
 pub const CHANNEL_CORE_LOG: &str = "core://log";
 pub const CHANNEL_ACCOUNT_CHANGED: &str = "account://changed";
+pub const CHANNEL_PROVIDER_PROFILES_CHANGED: &str = "provider://profiles-changed";
 
 /// Channels Core may emit as protocol `event` frames (including reserved unused).
 pub const CORE_EVENT_CHANNELS: &[&str] = &[
@@ -25,10 +29,13 @@ pub const CORE_EVENT_CHANNELS: &[&str] = &[
     CHANNEL_LYRICS_PROJECTION,
     CHANNEL_LYRICS_DOCUMENT,
     CHANNEL_PLUGIN_CHANGED,
+    CHANNEL_PLUGIN_UPDATE_PROGRESS,
     CHANNEL_PREFERENCES_CHANGED,
     CHANNEL_HOST_COMMAND,
+    CHANNEL_PROVIDER_LOCAL_FILES,
     CHANNEL_CORE_LOG,
     CHANNEL_ACCOUNT_CHANGED,
+    CHANNEL_PROVIDER_PROFILES_CHANGED,
 ];
 
 /// Existing host-owned window/tray channels. Not emitted by Core fan-out.

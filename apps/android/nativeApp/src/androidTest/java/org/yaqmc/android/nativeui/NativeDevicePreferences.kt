@@ -15,9 +15,13 @@ import org.junit.rules.ExternalResource
 internal class NativeDevicePreferences(private val activityClass: Class<out ComponentActivity> = NativeActivity::class.java) : ExternalResource() {
         private val keys = setOf("theme", "language", "lyrics", "appearance", "lyric-presets", NativePreferenceStore.ALLOW_CONCURRENT_PLAYBACK)
         private var original: Map<String, *> = emptyMap<String, Any>()
+        private var pluginOriginal: Map<String, *> = emptyMap<String, Any>()
         override fun before() {
             assertOfflineCoreInactive()
             val storage = context().getSharedPreferences("native-ui", Context.MODE_PRIVATE)
+            val pluginStorage = context().getSharedPreferences("native-plugin-runtime", Context.MODE_PRIVATE)
+            pluginOriginal = pluginStorage.all
+            pluginStorage.edit().clear().commit()
             original = storage.all.filterKeys { it in keys }
             storage.edit().putString("theme", "light").putString("language", "en-US").remove("lyrics").remove("appearance")
                 .remove("lyric-presets").remove(NativePreferenceStore.ALLOW_CONCURRENT_PLAYBACK).commit()
@@ -41,6 +45,16 @@ internal class NativeDevicePreferences(private val activityClass: Class<out Comp
                 is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
             } }
             editor.commit()
+            val pluginEditor = context().getSharedPreferences("native-plugin-runtime", Context.MODE_PRIVATE).edit().clear()
+            pluginOriginal.forEach { (key, value) -> when (value) {
+                is String -> pluginEditor.putString(key, value)
+                is Int -> pluginEditor.putInt(key, value)
+                is Long -> pluginEditor.putLong(key, value)
+                is Float -> pluginEditor.putFloat(key, value)
+                is Boolean -> pluginEditor.putBoolean(key, value)
+                is Set<*> -> pluginEditor.putStringSet(key, value.filterIsInstance<String>().toSet())
+            } }
+            pluginEditor.commit()
             assertOfflineCoreInactive()
         }
     private fun assertOfflineCoreInactive() {

@@ -44,13 +44,13 @@ import org.yaqmc.android.R
 internal fun MiniPlayer(model: NativeViewModel, share: (Track) -> Unit) {
     val player by model.player.collectAsStateWithLifecycle()
     val current = player.current ?: return
-    Surface(tonalElevation = 3.dp) {
+    Surface(Modifier.pluginRegion(model, "player-bar"), color = pluginRegionColor(model, "player-bar", MaterialTheme.colorScheme.surface), tonalElevation = 3.dp) {
         Column {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Row(Modifier.weight(1f).clickable { model.navigate(NativeRoute("player")) }.testTag("mini-player-open"), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f).clickable { model.openPlayer() }.testTag("mini-player-open"), verticalAlignment = Alignment.CenterVertically) {
                 Artwork(current.artwork, Modifier.size(44.dp))
                 Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
-                    Text(current.title.ifBlank { stringResource(R.string.native_unknown_song) }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(current.title.ifBlank { stringResource(R.string.native_unknown_song) }, style = pluginTextStyle(model, MaterialTheme.typography.bodyLarge), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(current.artists, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     PlaybackStatus(player, compact = true)
                 }
@@ -60,6 +60,7 @@ internal fun MiniPlayer(model: NativeViewModel, share: (Track) -> Unit) {
                 Transport(R.drawable.ic_player_skip_next, stringResource(R.string.native_next)) { model.command("player_next") }
                 TrackMenu(current, model, share, playbackOptions = true)
             }
+            NativePluginActions(model, "playerBar")
             if (player.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             else LinearProgressIndicator(progress = { (player.position.toFloat() / player.duration.coerceAtLeast(1)).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(2.dp))
         }
@@ -126,7 +127,10 @@ internal fun TrackMenu(track: Track, model: NativeViewModel, share: (Track) -> U
     val queueBusy by model.queueBusy.collectAsStateWithLifecycle()
     val qualityBusy by model.qualityBusy.collectAsStateWithLifecycle()
     val favorite = favorites[track.key] ?: track.favorite
-    val available = track.providerId == "qqmusic"
+    val plugins by model.plugins.state.collectAsStateWithLifecycle()
+    val contributions by model.plugins.contributions.collectAsStateWithLifecycle()
+    val available = track.providerId == "qqmusic" || plugins.providers.any { it.text("providerId") == track.providerId && it.optBoolean("available") }
+    val supportsAccount = plugins.providers.firstOrNull { it.text("providerId") == track.providerId }?.optJSONObject("capabilities")?.optBoolean("account", true) != false
     val isCurrent = queueEntry != null && queueEntry.id == player.currentEntry?.id
     Box {
         IconButton(onClick = { menu = true }, modifier = if (queueEntry != null) Modifier.testTag("queue-menu-${queueEntry.id}") else Modifier) {
@@ -138,7 +142,7 @@ internal fun TrackMenu(track: Track, model: NativeViewModel, share: (Track) -> U
                 DropdownMenuItem(text = { Text(stringResource(R.string.native_player_preset_layout)) }, onClick = { menu = false; presetLayout() }, modifier = Modifier.testTag("player-preset-layout"))
             }
             if (playbackOptions) {
-                DropdownMenuItem(text = { Text(stringResource(R.string.native_queue)) }, onClick = { menu = false; model.navigate(NativeRoute("queue")) })
+                DropdownMenuItem(text = { Text(stringResource(R.string.native_queue)) }, onClick = { menu = false; model.openQueue() })
                 DropdownMenuItem(text = { Text(stringResource(R.string.native_select_quality)) }, enabled = available && !qualityBusy, onClick = { menu = false; qualityDialog = true })
             }
             if (queueEntry != null && !isCurrent) {
@@ -151,11 +155,17 @@ internal fun TrackMenu(track: Track, model: NativeViewModel, share: (Track) -> U
                 }
             }
             if (queueEntry == null && (!playbackOptions || presetLayout != null)) DropdownMenuItem(text = { Text(stringResource(R.string.native_add_queue)) }, enabled = available, onClick = { menu = false; model.command("player_add_to_queue", JSONObject().put("track", track.json)) })
-            DropdownMenuItem(text = { Text(stringResource(if (track.key in pending) R.string.native_working else if (favorite) R.string.native_unfavorite else R.string.native_favorite)) },
-                enabled = track.key !in pending && (!account.authenticated || (account.canFavorite && track.writable)), onClick = { menu = false; model.favorite(track) })
-            DropdownMenuItem(text = { Text(stringResource(R.string.native_add_playlist)) }, enabled = !account.authenticated || account.canWrite(track), onClick = { menu = false; model.openPicker(track) })
-            DropdownMenuItem(text = { Text(stringResource(R.string.native_song_details)) }, enabled = available, onClick = { menu = false; model.navigate(NativeRoute("song", track.id)) })
+            if (supportsAccount) DropdownMenuItem(text = { Text(stringResource(if (track.key in pending) R.string.native_working else if (favorite) R.string.native_unfavorite else R.string.native_favorite)) },
+                enabled = track.key !in pending && (!account.authenticated || account.canFavorite(track)), onClick = { menu = false; model.favorite(track) })
+            if (supportsAccount) DropdownMenuItem(text = { Text(stringResource(R.string.native_add_playlist)) }, enabled = !account.authenticated || account.canWrite(track), onClick = { menu = false; model.openPicker(track) })
+            DropdownMenuItem(text = { Text(stringResource(R.string.native_song_details)) }, enabled = available, onClick = { menu = false; model.openTrack(track) })
+            if (plugins.providers.any { it.text("providerId") == track.providerId && it.optBoolean("available") && it.optJSONObject("capabilities")?.optBoolean("comments") == true }) {
+                DropdownMenuItem(text = { Text(stringResource(R.string.native_comments)) }, onClick = { menu = false; model.navigate(NativeRoute("comments", track.json.optJSONObject("provider")?.text("trackId")?.takeIf(String::isNotBlank) ?: track.id, query = track.title, providerId = track.providerId, profileId = track.profileId)) })
+            }
             DropdownMenuItem(text = { Text(stringResource(R.string.native_share)) }, enabled = available, onClick = { menu = false; share(track) })
+            contributions.optJSONArray("track").objects().forEach { action ->
+                DropdownMenuItem(text = { Text(action.text("label")) }, onClick = { menu = false; model.plugins.action(action.text("pluginId"), JSONObject().put("id", action.text("id")).put("slot", "track")) })
+            }
             if (queueEntry != null && !isCurrent) DropdownMenuItem(text = { Text(stringResource(R.string.native_remove_queue)) }, enabled = player.authoritative && !queueBusy,
                 onClick = { menu = false; model.removeQueueEntry(queueEntry.id) })
         }
@@ -209,7 +219,7 @@ internal fun Queue(model: NativeViewModel, share: (Track) -> Unit) {
     LaunchedEffect(player.entryIds, player.currentIndex, busy) {
         if (draggedId != null && (busy || draggedId !in player.upcomingIds)) finishDrag(false)
     }
-    LazyColumn(Modifier.fillMaxSize().testTag("queue-list"), state = list, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    LazyColumn(Modifier.fillMaxSize().pluginRegion(model, "queue").testTag("queue-list"), state = list, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         player.currentEntry?.let { entry ->
             item("current") {
                 Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)) {
@@ -254,9 +264,10 @@ internal fun Queue(model: NativeViewModel, share: (Track) -> Unit) {
 @Composable
 private fun QueueRow(entry: QueueItem, model: NativeViewModel, share: (Track) -> Unit, current: Boolean) {
     val track = entry.track
-    Row(Modifier.fillMaxWidth().testTag("queue-row-${entry.id}").clickable(enabled = track.providerId == "qqmusic",
+    val available = nativeProviderAvailable(model, track.providerId)
+    Row(Modifier.fillMaxWidth().testTag("queue-row-${entry.id}").clickable(enabled = available,
         onClickLabel = if (current) null else stringResource(R.string.native_play_track, track.title)) {
-        if (current) model.navigate(NativeRoute("player")) else model.playQueueEntry(entry.id)
+        if (current) model.openPlayer() else model.playQueueEntry(entry.id)
     }.heightIn(min = 72.dp).padding(start = 8.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Artwork(track.artwork, Modifier.size(48.dp))
         Column(Modifier.weight(1f).padding(start = 12.dp, end = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -264,7 +275,7 @@ private fun QueueRow(entry: QueueItem, model: NativeViewModel, share: (Track) ->
             Text(track.title, style = MaterialTheme.typography.bodyLarge, fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                 color = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-            if (track.providerId == "qqmusic") Text(track.artists,
+            if (available) Text(track.artists,
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             else Text(stringResource(R.string.native_unsupported_provider), style = MaterialTheme.typography.bodySmall)
         }
@@ -283,7 +294,11 @@ internal fun PresetNowPlaying(model: NativeViewModel, share: (Track) -> Unit) {
     val pending by model.pendingFavorites.collectAsStateWithLifecycle()
     val track = player.current
     val preferences by model.preferences.collectAsStateWithLifecycle()
+    val pluginState by model.plugins.state.collectAsStateWithLifecycle()
+    val pluginScene = pluginState.resources.optJSONArray("scenes").objects().firstOrNull { pluginSceneId(it) == preferences.lyricPresets.selectedId }
+    if (pluginScene != null) { NativePluginScene(model, pluginScene, Modifier.fillMaxSize()); return }
     val preset = preferences.lyricPresets.current()
+    val available = track?.let { nativeProviderAvailable(model, it.providerId) } ?: false
     val lyricClock = rememberLyricClock(player)
     val wide = LocalConfiguration.current.screenWidthDp >= 600
     if (track == null) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(stringResource(R.string.native_select_song)) }; return }
@@ -310,11 +325,11 @@ internal fun PresetNowPlaying(model: NativeViewModel, share: (Track) -> Unit) {
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(track.title.ifBlank { stringResource(R.string.native_unknown_song) },
-                            Modifier.clickable(enabled = track.providerId == "qqmusic") {
-                                model.navigate(NativeRoute("song", track.id))
+                            Modifier.clickable(enabled = available) {
+                                model.openTrack(track)
                             }, style = MaterialTheme.typography.titleLarge, maxLines = 2,
                             overflow = TextOverflow.Ellipsis)
-                        if (track.providerId == "qqmusic")
+                        if (available)
                             EntityLinks(track.artistLinks + listOfNotNull(track.albumLink), model, compact = true)
                         else Text(stringResource(R.string.native_unsupported_provider))
                     }
@@ -339,16 +354,16 @@ internal fun PresetNowPlaying(model: NativeViewModel, share: (Track) -> Unit) {
                 Transport(R.drawable.ic_player_skip_previous, stringResource(R.string.native_previous)) { model.command("player_previous") }
                 FilledTonalButton(onClick = { model.command("player_toggle") }) { Text(stringResource(if (player.playing) R.string.native_pause else R.string.native_play)) }
                 Transport(R.drawable.ic_player_skip_next, stringResource(R.string.native_next)) { model.command("player_next") }
-                IconButton(onClick = { model.navigate(NativeRoute("queue")) }) { Icon(Icons.Default.Menu, stringResource(R.string.native_queue)) }
+                IconButton(onClick = { model.openQueue() }) { Icon(Icons.Default.Menu, stringResource(R.string.native_queue)) }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), itemVerticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = {
                     val mode = when (player.mode) { "sequential" -> "shuffle"; "shuffle" -> "repeat-one"; else -> "sequential" }
                     model.command("player_set_primary_playback_mode", JSONObject().put("mode", mode))
                 }, modifier = Modifier.testTag("playback-mode")) { Text(stringResource(when (player.mode) { "shuffle" -> R.string.native_shuffle; "repeat-one" -> R.string.native_repeat_one; else -> R.string.native_sequential })) }
-                QualityPicker(player.selection.requested, player.selection, enabled = track.providerId == "qqmusic" && !qualityBusy) { model.changeQuality(it, current = true) }
+                QualityPicker(player.selection.requested, player.selection, enabled = available && !qualityBusy) { model.changeQuality(it, current = true) }
                 val favorite = favorites[track.key] ?: track.favorite
-                IconButton(enabled = track.key !in pending && (!account.authenticated || (account.canFavorite && track.writable)), onClick = { model.favorite(track) }) {
+                IconButton(enabled = track.key !in pending && (!account.authenticated || account.canFavorite(track)), onClick = { model.favorite(track) }) {
                     if (track.key in pending) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     else Icon(if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, stringResource(if (favorite) R.string.native_unfavorite else R.string.native_favorite))
                 }

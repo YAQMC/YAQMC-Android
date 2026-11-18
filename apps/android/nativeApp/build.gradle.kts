@@ -148,7 +148,8 @@ val buildRustCore = tasks.register<Exec>("buildRustCore") {
   environment("ANDROID_HOME", sdk)
   environment("ANDROID_NDK_HOME", "$sdk/ndk/${android.ndkVersion}")
   inputs.files(repositoryRoot.resolve("Cargo.toml"), repositoryRoot.resolve("Cargo.lock"))
-  inputs.files(fileTree(repositoryRoot.resolve("crates")) { include("**/*.rs", "**/Cargo.toml") })
+  inputs.files(fileTree(repositoryRoot.resolve("crates")) { include("**/*.rs", "**/Cargo.toml", "**/*.json", "**/*.wit") })
+  inputs.files(fileTree(repositoryRoot.resolve("wit")) { include("**/*.wit", "**/*.json") })
   inputs.property("abi", nativeAbi)
   outputs.file(nativeDirectory.resolve("$nativeAbi/libyaqmc_core.so"))
 }

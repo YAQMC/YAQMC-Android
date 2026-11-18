@@ -104,7 +104,7 @@ class NativeExperienceUiTest {
         compose.onNodeWithTag("settings-concurrent-playback").performClick().assertIsOff()
         compose.onNodeWithText("音乐爱好者").assertDoesNotExist()
         compose.onNodeWithText("退出登录").assertDoesNotExist()
-        assertFalse(core.calls.any { it.first == "provider_cache_stats" })
+        assertFalse(core.calls.any { it.first == "app_cache_stats" })
         capture("ux-settings")
         compose.onNodeWithTag("settings-language").performClick()
         compose.onNodeWithTag("language-en-US").performClick()
@@ -252,7 +252,7 @@ class NativeExperienceUiTest {
                 "provider_lyrics" -> JSONObject().put("songId", "s0").put("syncMode", "line").put("lines", JSONArray((0..8).map {
                     JSONObject().put("startMs", it * 10000).put("endMs", (it + 1) * 10000).put("text", "有你别无所求了")
                 }))
-                "provider_cache_stats" -> JSONObject("""{"totalBytes":2048,"mediaEntries":3,"artworkEntries":2}""")
+                "app_cache_stats" -> JSONObject("""{"totalBytes":2048,"mediaEntries":3,"artworkEntries":2}""")
                 else -> snapshot()
             }
         }

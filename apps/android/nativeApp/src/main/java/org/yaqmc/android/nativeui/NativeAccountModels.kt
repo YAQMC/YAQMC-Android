@@ -9,6 +9,7 @@ internal data class AccountUi(
     val identity: String = "", val entitlement: JSONObject? = null, val revision: Long = 0,
     val capabilities: JSONObject = JSONObject(), val expiresAt: Long? = null,
     val upstreamCode: Int? = null,
+    val providerId: String = "qqmusic", val profileId: String = "default",
 ) {
     val authenticated: Boolean get() = state == "authenticated"
     val loginPending: Boolean get() = state in setOf("starting-login", "waiting-for-scan", "waiting-for-confirmation")
@@ -16,7 +17,9 @@ internal data class AccountUi(
     fun canRead(kind: String): Boolean = capabilities.optBoolean(when (kind) {
         "favorites" -> "favoriteRead"; "recent" -> "recentHistoryRead"; else -> "playlistRead"
     })
-    fun canWrite(track: Track): Boolean = authenticated && capabilities.optBoolean("playlistWrite") && track.writable
+    fun owns(track: Track): Boolean = track.providerId == providerId && track.profileId == profileId
+    fun canFavorite(track: Track): Boolean = authenticated && canFavorite && owns(track) && track.writable
+    fun canWrite(track: Track): Boolean = authenticated && capabilities.optBoolean("playlistWrite") && owns(track) && track.writable
 
     companion object {
         fun parse(value: JSONObject): AccountUi {
@@ -26,7 +29,7 @@ internal data class AccountUi(
                 value.text("qrImageDataUri"), value.text("attemptId"), capabilities.optBoolean("favoriteWrite"),
                 profile?.text("maskedIdentity").orEmpty(), value.optJSONObject("entitlement"), value.optLong("revision"), capabilities,
                 if (value.isNull("expiresAtMs")) null else value.optLong("expiresAtMs"),
-                if (value.isNull("upstreamCode")) null else value.optInt("upstreamCode"))
+                if (value.isNull("upstreamCode")) null else value.optInt("upstreamCode"), value.text("providerId", "qqmusic"), value.text("profileId", "default"))
         }
     }
 }

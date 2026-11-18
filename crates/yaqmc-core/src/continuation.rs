@@ -384,6 +384,26 @@ impl ContinuationService {
         projection
     }
 
+    pub async fn end_for_provider(
+        &self,
+        provider_id: &str,
+        reason: ContinuationTerminalReason,
+    ) -> ContinuationSnapshot {
+        let projection = {
+            let mut state = self.state.lock().await;
+            if state
+                .active
+                .as_ref()
+                .is_none_or(|active| active.provider_id != provider_id)
+            {
+                return state.projection.clone();
+            }
+            finish_locked(&mut state, reason, None, false)
+        };
+        self.publish(&projection);
+        projection
+    }
+
     async fn observe_player(self: &Arc<Self>) {
         let snapshot = self.player.snapshot().await;
         let mut terminal = None;
@@ -1025,6 +1045,8 @@ mod tests {
             audio_formats: Vec::new(),
             playback_capability: None,
             provider: Some(yaqmc_provider_api::ProviderTrackReference {
+                origin_provider_id: None,
+                profile_id: yaqmc_provider_api::DEFAULT_PROFILE_ID.to_owned(),
                 provider_id: "fake".to_owned(),
                 track_id: id.to_owned(),
                 numeric_id: Some(numeric_id),

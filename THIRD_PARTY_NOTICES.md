@@ -19,20 +19,26 @@ unlicensed repositories, are recorded in
 [docs/qqmusic-provider.md](docs/qqmusic-provider.md) and are not reproduced
 here.
 
-## Apple Music-like Lyrics（历史 Web 客户端）
+## Apple Music-like Lyrics（插件歌词场景）
 
 Source: <https://github.com/amll-dev/applemusic-like-lyrics>
 
-Packages: `@applemusic-like-lyrics/core` `0.5.2` and `@applemusic-like-lyrics/react` `0.5.2`
+Packages: `@applemusic-like-lyrics/core` / `react` `0.5.2`。Android 插件场景复用 YAQMC 上游的 React 场景与原版 AMLL 歌词播放器；普通原生歌词页保持 Compose 实现。
 
 License: GNU Affero General Public License version 3 only (`AGPL-3.0-only`). These official packages were used by
-the retired desktop lyric renderer without vendoring or local modification. The current native Android app does not depend on them. The package license text and corresponding
+the desktop lyric renderer without local modification. The native plugin renderer bundles these pinned packages and its applicable transitive dependencies using `scripts/build-plugin-runtime.mjs`; exact resolutions are recorded in `package-lock.json`. The [license text](apps/android/nativeApp/src/main/assets/licenses/amll-AGPL-3.0.txt) is included in the APK. The corresponding
 source are available from the upstream project; distributors of YAQMC must satisfy the GPLv3/AGPLv3 obligations
 described in [docs/lyrics.md](https://github.com/YAQMC/YAQMC-Android/blob/b0b5acf9d91ebb5e677ee6a95b38318faa558e15/docs/lyrics.md#amll-decision).
 
 `mzj3920/qqmusic-decrypt`, AynaLivePlayer/miaosic, and official QQ Music Electron ASAR contents are **not**
 in-tree YAQMC sources. The `mzj3920` and ASAR claims were removed from the current pinned `qm-api-rs` revision;
 miaosic was protocol corroboration only.
+
+## YAQMC 共享插件宿主与前端
+
+Rust 插件宿主、WIT、SDK Worker 和场景组件移植自 [YAQMC/YAQMC `e6136cf`](https://github.com/YAQMC/YAQMC/tree/e6136cf5b03f1417b33fdc3c1add292c2c855368)，适用 GPL-3.0-or-later。前端源文件映射见 [SOURCE.json](apps/android/nativeApp/src/main/plugin-runtime/upstream/SOURCE.json)。Android 适配负责本地 WebView、Compose 贡献、SAF 与 JNI 接线，插件包保持上游格式。
+
+插件场景另包含 React / React DOM、i18next / react-i18next、Zustand、Lucide 和 OpenCC 及实际使用的依赖。精确版本以 `package-lock.json` 为准，[随 APK 保留的许可证与版权声明](apps/android/nativeApp/src/main/assets/licenses/plugin-runtime.txt)由构建脚本从实际打包的 npm 包收集。React 等采用 MIT，Lucide 同时保留 ISC / MIT 归属；OpenCC 及其字典的独立声明一并保留。发布时按对应源码政策提供实际依赖源码。
 
 ## Rust Provider Component examples（历史插件示例）
 

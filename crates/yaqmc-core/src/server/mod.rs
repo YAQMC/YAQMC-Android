@@ -1,8 +1,11 @@
 //! Protocol method dispatch over the P1 Core service graph.
 
+pub(crate) mod comment_requests;
 mod events;
 mod methods;
 pub mod ops;
+#[cfg(feature = "plugins")]
+mod plugin_ops;
 mod runtime;
 mod serve;
 mod types;

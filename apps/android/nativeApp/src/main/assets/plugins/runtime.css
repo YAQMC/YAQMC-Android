@@ -1,0 +1,24 @@
+:root {
+  color-scheme: light dark;
+  --yaqmc-primary: #6d8146;
+  --yaqmc-secondary: #788859;
+  --yaqmc-radius-card: 20px;
+  --yaqmc-player-height: 72px;
+  --yaqmc-surface-alpha: 1;
+}
+html,
+body {
+  margin: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: transparent;
+  font-family: sans-serif;
+}
+#scene {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+}

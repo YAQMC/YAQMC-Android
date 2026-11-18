@@ -93,16 +93,21 @@ private fun NativeShell(model: NativeViewModel, login: (String) -> Unit, share: 
             isAppearanceLightNavigationBars = !dark
         }
     }
-    val colors = remember(preferences.appearance, dark) { nativeColorScheme(preferences.appearance, dark) }
+    val pluginContributions by model.plugins.contributions.collectAsStateWithLifecycle()
+    val pluginState by model.plugins.state.collectAsStateWithLifecycle()
+    val colors = remember(preferences.appearance, dark, pluginContributions) { pluginColorScheme(nativeColorScheme(preferences.appearance, dark), pluginContributions) }
+    LaunchedEffect(preferences, dark) { model.plugins.displayPreferences(preferences, dark) }
     val typography = remember(preferences.appearance.fontFamily) { nativeTypography(preferences.appearance.fontFamily) }
     val roots = nativeRootDestinations.map { it to titleFor(it).resolve() }
     val wide = LocalConfiguration.current.screenWidthDp >= 600
     BackHandler(route.kind != "home") { if (!model.back()) model.navigate(NativeRoute(), root = true) }
-    MaterialTheme(colorScheme = colors, typography = typography) {
+    MaterialTheme(colorScheme = colors, typography = typography, shapes = pluginShapes(MaterialTheme.shapes, pluginContributions)) {
         CompositionLocalProvider(LocalContentColor provides colors.onBackground) {
         val snack = remember { SnackbarHostState() }
         val messageText = message?.resolve()
         LaunchedEffect(messageText) { messageText?.let { snack.showSnackbar(it); model.dismissMessage() } }
+        val pluginNotice = pluginContributions.optJSONObject("notice")
+        LaunchedEffect(pluginNotice?.optLong("id")) { pluginNotice?.text("message")?.takeIf(String::isNotBlank)?.let { snack.showSnackbar(it) } }
         Box(Modifier.fillMaxSize()) {
         NativeBackdrop(preferences.appearance, artwork, Modifier.matchParentSize())
         AnimatedContent(targetState = route, modifier = Modifier.fillMaxSize(),
@@ -117,7 +122,7 @@ private fun NativeShell(model: NativeViewModel, login: (String) -> Unit, share: 
         val playingPage = destination.kind == "player"
         val listeningPage = playingPage || destination.kind == "queue"
         val browsingPage = destination.kind !in nativeUtilityDestinations && !listeningPage
-        val pageKey = if (destination.kind == "search") "search:${destination.searchKind}" else "${destination.kind}:${destination.id}:${destination.tab}"
+        val pageKey = if (destination.kind == "search") "${destination.providerId}:${destination.profileId}:search:${destination.searchKind}" else "${destination.providerId}:${destination.profileId}:${destination.pluginId}:${destination.kind}:${destination.id}:${destination.tab}"
         LaunchedEffect(pageKey) {
             savedPages.remove(pageKey)
             savedPages += pageKey
@@ -138,10 +143,10 @@ private fun NativeShell(model: NativeViewModel, login: (String) -> Unit, share: 
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.native_back))
                     }
                 }, actions = {
-                    if (destination.kind in nativeRootDestinations && destination.kind != "search") {
+                    if (destination.kind in nativeRootDestinations && destination.kind != "search" && pluginState.providers.firstOrNull { it.text("providerId") == destination.providerId }?.optJSONObject("capabilities")?.optBoolean("account", true) != false) {
                     val nickname = account.nickname.ifBlank { stringResource(R.string.native_guest) }
                     val accountLabel = stringResource(R.string.native_open_account, nickname)
-                    IconButton(onClick = { model.navigate(NativeRoute("account")) }, modifier = Modifier.testTag("open-account").semantics { contentDescription = accountLabel }) {
+                    IconButton(onClick = { model.navigate(NativeRoute("account", providerId = destination.providerId, profileId = destination.profileId)) }, modifier = Modifier.testTag("open-account").semantics { contentDescription = accountLabel }) {
                         if (account.avatar.isNotBlank()) AsyncImage(account.avatar, null, Modifier.size(32.dp).clip(RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop)
                         else Icon(Icons.Default.AccountCircle, null)
                     }
@@ -156,7 +161,7 @@ private fun NativeShell(model: NativeViewModel, login: (String) -> Unit, share: 
                 if (browsingPage) {
                 Column {
                     MiniPlayer(model, openShare)
-                    if (!wide) NavigationBar(containerColor = colors.surface) { roots.forEach { (kind, label) ->
+                    if (!wide) NavigationBar(modifier = Modifier.pluginRegion(model, "sidebar"), containerColor = pluginRegionColor(model, "sidebar", colors.surface)) { roots.forEach { (kind, label) ->
                         NavigationBarItem(selected = selectedRoot == kind, onClick = { model.selectRoot(kind) },
                             icon = { NavIcon(kind, label) }, label = { Text(label) }, modifier = Modifier.testTag("nav-$kind"))
                     } }
@@ -165,7 +170,7 @@ private fun NativeShell(model: NativeViewModel, login: (String) -> Unit, share: 
             },
         ) { padding ->
             Row(Modifier.fillMaxSize().padding(padding)) {
-                if (wide && browsingPage) NavigationRail(Modifier.fillMaxHeight(), containerColor = colors.surface) { roots.forEach { (kind, label) ->
+                if (wide && browsingPage) NavigationRail(Modifier.fillMaxHeight().pluginRegion(model, "sidebar"), containerColor = pluginRegionColor(model, "sidebar", colors.surface)) { roots.forEach { (kind, label) ->
                     NavigationRailItem(selected = selectedRoot == kind, onClick = { model.selectRoot(kind) },
                         icon = { NavIcon(kind, label) }, label = { Text(label) }, modifier = Modifier.weight(1f, fill = false).testTag("nav-$kind"))
                 } }
@@ -175,13 +180,17 @@ private fun NativeShell(model: NativeViewModel, login: (String) -> Unit, share: 
                         "library" -> Library(model)
                         "account" -> Account(model, login)
                         "settings" -> Settings(model)
+                        "plugins" -> NativePluginManager(model)
+                        "comments" -> NativeComments(model, destination)
+                        "plugin-store" -> NativePluginStore(model)
+                        "plugin-page" -> NativePluginPage(model, destination)
                         "storage-settings" -> StorageSettings(model)
                         "statistics" -> NativeStatistics(model)
                         "diagnostics" -> NativeDiagnostics(model)
                         "issue-report" -> NativeIssueReport(model)
                         "about" -> NativeAbout(model)
                         "lyric-settings" -> NativeLyricSettings(preferences.lyrics, model::setLyrics) { model.navigate(NativeRoute("lyric-presets")) }
-                        "lyric-presets" -> NativeLyricPresets(preferences.lyricPresets, model::setLyricPresets)
+                        "lyric-presets" -> NativePluginPresetSettings(model)
                         "appearance-settings" -> NativeAppearanceSettings(preferences.appearance, dark, model::setAppearance,
                             { model.setAppearance(NativeAppearancePreferences()); model.setTheme("system") }, model::notify,
                             preferences.theme, model::setTheme)
@@ -235,6 +244,7 @@ internal fun TrackRow(track: Track, model: NativeViewModel, share: (Track) -> Un
         Artwork(track.artwork, Modifier.size(48.dp))
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(track.title.ifBlank { stringResource(R.string.native_unknown_song) }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            NativePluginSongBadges(model, track)
             Text(listOf(track.artists, track.album).filter(String::isNotBlank).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -249,6 +259,9 @@ internal fun TrackRow(track: Track, model: NativeViewModel, share: (Track) -> Un
 private fun Account(model: NativeViewModel, login: (String) -> Unit) {
     val account by model.account.collectAsStateWithLifecycle()
     val busy by model.accountBusy.collectAsStateWithLifecycle()
+    val methods by model.loginMethods.collectAsStateWithLifecycle()
+    val route by model.route.collectAsStateWithLifecycle()
+    LaunchedEffect(route.providerId, route.profileId) { model.refreshAccount(); model.loadLoginMethods() }
     var confirmSignOut by remember { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize().testTag("account-list"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -262,8 +275,10 @@ private fun Account(model: NativeViewModel, login: (String) -> Unit) {
         item {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (account.state != "authenticated") {
+                    if (route.providerId == "qqmusic") {
                     Button(enabled = !busy && !account.loginPending, onClick = { login("qq") }) { Text(stringResource(R.string.native_qq_login)) }
                     OutlinedButton(enabled = !busy && !account.loginPending, onClick = { login("wechat") }) { Text(stringResource(R.string.native_wechat_login)) }
+                    } else methods.forEach { method -> Button(enabled = !busy && !account.loginPending, onClick = { login(method.text("id")) }) { Text(method.text("label")) } }
                 }
             }
         }

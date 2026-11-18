@@ -13,10 +13,10 @@ internal enum class SongShareKind(val label: Int) {
 internal data class SongSharePayload(val title: String, val text: String)
 
 internal object NativeSongShare {
-    suspend fun resolve(track: Track, kind: SongShareKind, core: NativeCoreApi): SongSharePayload {
+    suspend fun resolve(track: Track, kind: SongShareKind, core: NativeCoreApi, knownProviders: Set<String> = setOf("qqmusic")): SongSharePayload {
         val id = track.id.trim()
         val title = track.title.trim()
-        if (track.providerId != "qqmusic" || id.isBlank() || id.toByteArray(StandardCharsets.UTF_8).size > 256 || hasControl(id) || title.isBlank() || hasControl(title)) {
+        if (track.providerId !in knownProviders || id.isBlank() || id.toByteArray(StandardCharsets.UTF_8).size > 256 || hasControl(id) || title.isBlank() || hasControl(title)) {
             throw CoreFailure("native.share.invalid", "")
         }
         val text = when (kind) {
@@ -24,10 +24,11 @@ internal object NativeSongShare {
                 val artists = track.json.optJSONArray("artists").objects().map { it.text("name").trim() }.filter(String::isNotBlank).joinToString(", ")
                 if (artists.isBlank()) title else "$title — $artists"
             }
-            SongShareKind.YAQMC_LINK -> "yaqmc://catalog/${track.providerId}/song?id=${URLEncoder.encode(id, StandardCharsets.UTF_8.name()).replace("+", "%20")}"
+            SongShareKind.YAQMC_LINK -> "yaqmc://catalog/${track.providerId}/song?id=${URLEncoder.encode(id, StandardCharsets.UTF_8.name()).replace("+", "%20")}" +
+                if (track.profileId == "default") "" else "&profileId=${URLEncoder.encode(track.profileId, StandardCharsets.UTF_8.name())}"
             SongShareKind.PUBLIC_LINK -> {
-                val target = core.objectResult("catalog_share_song", JSONObject().put("providerId", track.providerId).put("id", id))
-                if (target.text("providerId") != track.providerId || target.text("entityKind") != "song" || target.text("entityId") != id || target.text("title").isBlank() || hasControl(target.text("title"))) {
+                val target = core.objectResult("catalog_share_song", JSONObject().put("providerId", track.providerId).put("profileId", track.profileId).put("id", id))
+                if (target.text("providerId") != track.providerId || target.text("profileId", "default") != track.profileId || target.text("entityKind") != "song" || target.text("entityId") != id || target.text("title").isBlank() || hasControl(target.text("title"))) {
                     throw CoreFailure("native.share.invalid", "")
                 }
                 val url = target.text("canonicalHttpsUrl")

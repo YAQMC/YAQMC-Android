@@ -25,11 +25,13 @@ internal fun titleFor(kind: String): NativeText = NativeText(when (kind) {
     "about" -> R.string.native_about_title; "album" -> R.string.native_albums
     "artist" -> R.string.native_artists; "playlist", "account-playlist" -> R.string.native_playlists
     "song" -> R.string.native_songs; "player" -> R.string.native_now_playing
+    "plugins", "plugin-page", "plugin-store" -> R.string.native_plugins
+    "comments" -> R.string.native_comments
     "queue" -> R.string.native_queue; else -> R.string.native_music
 })
 
 internal val nativeRootDestinations = listOf("home", "discover", "library", "search")
-internal val nativeUtilityDestinations = setOf("account", "settings", "storage-settings", "appearance-settings", "lyric-settings", "lyric-presets", "statistics", "diagnostics", "issue-report", "about")
+internal val nativeUtilityDestinations = setOf("account", "settings", "storage-settings", "appearance-settings", "lyric-settings", "lyric-presets", "statistics", "diagnostics", "issue-report", "about", "plugins", "plugin-page", "plugin-store", "comments")
 internal fun selectedRoot(kind: String): String = when (kind) {
     "favorites", "account-playlists", "account-playlist", "recent", "statistics" -> "library"
     else -> kind

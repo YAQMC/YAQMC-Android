@@ -3827,6 +3827,8 @@ fn normalize_new_song(raw: NewSongDto) -> Option<Song> {
         audio_formats: formats,
         playback_capability: Some(playback_capability),
         provider: Some(ProviderTrackReference {
+            origin_provider_id: None,
+            profile_id: yaqmc_provider_api::DEFAULT_PROFILE_ID.to_owned(),
             provider_id: "qqmusic".to_owned(),
             track_id: song_mid,
             numeric_id: (raw.id > 0).then_some(raw.id),
@@ -3934,6 +3936,8 @@ fn normalize_qm_song(raw: qqmusic_api::Song, fallback_track_number: u32) -> Opti
         audio_formats: formats,
         playback_capability: Some(playback_capability),
         provider: Some(ProviderTrackReference {
+            origin_provider_id: None,
+            profile_id: yaqmc_provider_api::DEFAULT_PROFILE_ID.to_owned(),
             provider_id: "qqmusic".to_owned(),
             track_id: song_mid,
             numeric_id: (raw.id > 0).then_some(raw.id as u64),
@@ -4317,6 +4321,8 @@ fn normalize_old_song(raw: OldSongDto, fallback_track_number: u32) -> Option<Son
         audio_formats: formats,
         playback_capability: Some(playback_capability),
         provider: Some(ProviderTrackReference {
+            origin_provider_id: None,
+            profile_id: yaqmc_provider_api::DEFAULT_PROFILE_ID.to_owned(),
             provider_id: "qqmusic".to_owned(),
             track_id: song_mid,
             numeric_id: (raw.song_id > 0).then_some(raw.song_id),
@@ -4694,6 +4700,7 @@ pub(crate) fn parse_qrc_document(song_mid: &str, raw: &str) -> Option<LyricDocum
         return None;
     }
     Some(LyricDocument {
+        comments: Vec::new(),
         song_id: track_id(song_mid),
         sync_mode: if lines.iter().any(|line| !line.words.is_empty()) {
             LyricSyncMode::Word
@@ -4813,6 +4820,7 @@ pub(crate) fn parse_lrc_document(song_mid: &str, raw: &str) -> Option<LyricDocum
             return None;
         }
         return Some(LyricDocument {
+            comments: Vec::new(),
             song_id: track_id(song_mid),
             sync_mode: LyricSyncMode::Unsynchronized,
             metadata: LyricMetadata {
@@ -4855,6 +4863,7 @@ pub(crate) fn parse_lrc_document(song_mid: &str, raw: &str) -> Option<LyricDocum
         });
     }
     Some(LyricDocument {
+        comments: Vec::new(),
         song_id: track_id(song_mid),
         sync_mode: LyricSyncMode::Line,
         metadata: LyricMetadata {

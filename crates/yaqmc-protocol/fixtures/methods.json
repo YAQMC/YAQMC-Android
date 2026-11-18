@@ -191,6 +191,19 @@
     "owner": "core",
     "requestCap": 1048576,
     "responseCap": 1048576,
+    "timeoutClass": "long",
+    "timeoutMs": 120000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "provider_search_cancel",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
     "timeoutClass": "standard",
     "timeoutMs": 30000
   },
@@ -255,6 +268,19 @@
     "name": "provider_playlist",
     "owner": "core",
     "requestCap": 1048576,
+    "responseCap": 16777216,
+    "timeoutClass": "long",
+    "timeoutMs": 120000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "provider_lyrics",
+    "owner": "core",
+    "requestCap": 1048576,
     "responseCap": 1048576,
     "timeoutClass": "standard",
     "timeoutMs": 30000
@@ -265,7 +291,20 @@
       "main"
     ],
     "mainWindowOnly": true,
-    "name": "provider_lyrics",
+    "name": "provider_comments",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "provider_comments_cancel",
     "owner": "core",
     "requestCap": 1048576,
     "responseCap": 1048576,
@@ -603,6 +642,32 @@
       "main"
     ],
     "mainWindowOnly": true,
+    "name": "app_cache_stats",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "app_clear_cache",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
     "name": "provider_clear_cache",
     "owner": "core",
     "requestCap": 1048576,
@@ -749,9 +814,9 @@
     "name": "qqmusic_playlist",
     "owner": "core",
     "requestCap": 1048576,
-    "responseCap": 1048576,
-    "timeoutClass": "standard",
-    "timeoutMs": 30000
+    "responseCap": 16777216,
+    "timeoutClass": "long",
+    "timeoutMs": 120000
   },
   {
     "allowedOrigins": [
@@ -1926,6 +1991,149 @@
       "main"
     ],
     "mainWindowOnly": true,
+    "name": "plugin_update_policy_get",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "plugin_update_policy_set",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "plugin_update_check",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "plugin_update_prepare",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "plugin_update_apply",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "plugin_update_status",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "plugin_update_cancel",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "plugin_update_runtime_ready",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "plugin_update_editing",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "plugin_store_search",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "long",
+    "timeoutMs": 120000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "plugin_store_releases",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "long",
+    "timeoutMs": 120000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
     "name": "plugin_inspect_path",
     "owner": "core",
     "requestCap": 1048576,
@@ -2039,6 +2247,31 @@
   },
   {
     "allowedOrigins": [
+      "host"
+    ],
+    "mainWindowOnly": false,
+    "name": "plugin_runtime_authorize",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "plugin_runtime_ready",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
       "host",
       "main"
     ],
@@ -2070,6 +2303,18 @@
     ],
     "mainWindowOnly": true,
     "name": "plugin_bridge",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host"
+    ],
+    "mainWindowOnly": false,
+    "name": "plugin_local_files",
     "owner": "core",
     "requestCap": 1048576,
     "responseCap": 1048576,
@@ -2156,6 +2401,102 @@
   },
   {
     "allowedOrigins": [
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "host_updater_check",
+    "owner": "host",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "host_updater_download",
+    "owner": "host",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "host_updater_install",
+    "owner": "host",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "host_updater_start",
+    "owner": "host",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "host_updater_status",
+    "owner": "host",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "host_updater_cancel",
+    "owner": "host",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "main"
+    ],
+    "mainWindowOnly": true,
+    "name": "host_updater_preferences",
+    "owner": "host",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host"
+    ],
+    "mainWindowOnly": false,
+    "name": "core_shutdown_cancel",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
       "host",
       "main"
     ],
@@ -2190,8 +2531,8 @@
     "owner": "core",
     "requestCap": 1048576,
     "responseCap": 1048576,
-    "timeoutClass": "standard",
-    "timeoutMs": 30000
+    "timeoutClass": "long",
+    "timeoutMs": 120000
   },
   {
     "allowedOrigins": [

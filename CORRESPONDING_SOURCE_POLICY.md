@@ -13,7 +13,7 @@ YAQMC-Android 沿用 YAQMC 的 `GPL-3.0-or-later` 许可证。公开预览与正
 - 实际链接的 `qm-api-rs` 精确版本源码。目前 `qqmusic-api` 固定为 `7d0f6e18b1d1d89a06cc5964e9c057acb0926ea5`，发布时同时核对提供器 manifest 和 `Cargo.lock`。
 - 按实际 Rust / Maven 解析结果整理的依赖清单、适用许可证与声明，以及需要交付的依赖对应源码；保留精确版本、来源与构建所需修改。不能只列直接依赖，也不能以一个上游仓库链接代替应交付的源码。
 
-当前 APK 不包含 Electron、React、Capacitor、AMLL 或旧 Provider Component 示例，不为当前原生版要求这些已退出组件的源码。
+当前 APK 不包含 Electron 或 Capacitor。插件歌词场景包含 React、AMLL 及其实际使用的依赖，源码归档须包含 `src/main/plugin-runtime` 的共享源码、`scripts/build-plugin-runtime.mjs`、`package.json` / `package-lock.json`、对应 npm 包的首选源码、许可证与声明。`npm ci` 后可重建已提交资源；不能只交付压缩后的浏览器资源。Android 测试中的 Provider 示例属于测试材料，不打入正式 APK。
 
 从最终干净提交导出项目源码，单独备齐外部依赖。GitHub 自动生成的仓库源码 ZIP 不包含 `qm-api-rs` 等外部依赖；不能单独把它作为完整对应源码交付。复用已有 Core 二进制时，也必须能确定并提供构建它的精确源码。
 

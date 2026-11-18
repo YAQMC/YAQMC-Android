@@ -51,7 +51,12 @@ internal fun Catalog(model: NativeViewModel, route: NativeRoute, share: (Track) 
         "artist" -> route.tab
         else -> ""
     }
-    val sections = page.sections.filter { it.tab == activeTab || it.tab.isBlank() }
+    val contributions by model.plugins.contributions.collectAsStateWithLifecycle()
+    val homeLayout = contributions.optJSONObject("homeLayout")
+    val homeHidden = homeLayout?.optJSONArray("hidden")?.let { array -> (0 until array.length()).map { array.optString(it) }.toSet() }.orEmpty()
+    val homeOrder = homeLayout?.optJSONArray("order")?.let { array -> (0 until array.length()).map { array.optString(it) } }.orEmpty()
+    val sections = page.sections.filter { (it.tab == activeTab || it.tab.isBlank()) && (route.kind != "home" || it.layoutKey !in homeHidden) }
+        .let { visible -> if (route.kind == "home" && homeOrder.isNotEmpty()) visible.sortedBy { homeOrder.indexOf(it.layoutKey).takeIf { index -> index >= 0 } ?: Int.MAX_VALUE } else visible }
     val subtitle = page.subtitle.resolve()
     val list = key(route, activeTab) { rememberLazyListState() }
     LaunchedEffect(state.loading, state.error) { if (!state.loading) reportDrawn() }
@@ -107,7 +112,7 @@ internal fun Catalog(model: NativeViewModel, route: NativeRoute, share: (Track) 
                     }
                 }
                 // The first home row is the three dedicated recommendation entry points.
-                if (route.kind == "home" && sectionIndex == 0 && section.cards.isNotEmpty()) item("hero") {
+                if (route.kind == "home" && section.layoutKey == "for-you" && section.cards.isNotEmpty()) item("hero") {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) { items(section.cards, key = { it.id }) { card -> CatalogCard(card, model, Modifier.width(220.dp)) } }
                 } else {
                     section.cards.chunked(columns).forEachIndexed { rowIndex, row ->
@@ -193,7 +198,7 @@ private fun CatalogCard(card: CatalogItem, model: NativeViewModel, modifier: Mod
 @Composable
 internal fun EntityLinks(links: List<EntityLink>, model: NativeViewModel, compact: Boolean = false) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { links.filter { it.title.isNotBlank() }.forEach { link ->
-        Text(link.title, Modifier.clickable(enabled = link.id.isNotBlank()) { model.navigate(NativeRoute(link.kind, link.id)) }.padding(vertical = if (compact) 4.dp else 8.dp),
+        Text(link.title, Modifier.clickable(enabled = link.id.isNotBlank()) { model.navigate(NativeRoute(link.kind, link.id, providerId = link.providerId, profileId = link.profileId)) }.padding(vertical = if (compact) 4.dp else 8.dp),
             style = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.primary, maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis)
     } }

@@ -6,7 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
+default = ["plugins"]
+plugins = ["dep:lofty", "dep:md-5", "dep:rsa", "dep:ring", "dep:semver", "dep:wasmtime", "dep:wasmtime-wasi"]
 test-support = ["dep:tempfile"]
 test-provider = ["test-support"]
 
@@ -15,7 +16,12 @@ async-trait = "0.1"
 base64 = "0.22"
 futures-util = "0.3"
 keyring = "4.1.6"
+lofty = { version = "=0.22.4", optional = true, default-features = false }
+md-5 = { version = "0.10", optional = true }
 rand = "0.9"
+rsa = { version = "0.9.10", optional = true }
+ring = { version = "0.17", optional = true }
+semver = { version = "1", optional = true }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "query", "rustls", "stream", "system-proxy"] }
 rodio = { version = "0.22.2", default-features = false, features = ["flac", "mp3", "mp4", "playback", "tracing", "wav"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
@@ -31,12 +37,15 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wasmtime = { version = "=36.0.20", optional = true, default-features = false, features = ["component-model", "cranelift", "runtime", "std", "wat"] }
+wasmtime-wasi = { version = "=36.0.20", optional = true, default-features = false }
 yaqmc-protocol = { path = "../yaqmc-protocol" }
 yaqmc-provider-api = { path = "../yaqmc-provider-api" }
 yaqmc-provider-qqmusic = { path = "../yaqmc-provider-qqmusic" }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "=9.1.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 axum = { version = "0.8", features = ["http1", "json", "tokio"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "net", "process", "rt-multi-thread", "test-util", "time"] }
+wat = "1"

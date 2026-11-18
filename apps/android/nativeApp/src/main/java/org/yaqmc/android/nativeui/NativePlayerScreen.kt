@@ -78,6 +78,7 @@ internal fun NowPlaying(
             if (track != null) TrackMenu(track, model, share, playbackOptions = true, presetLayout = { selectPresetLayout(true) })
             else Spacer(Modifier.size(48.dp))
         }
+        NativePluginActions(model, "lyrics")
         if (track == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(stringResource(R.string.native_select_song)) }
         } else if (presetLayout) {
@@ -172,15 +173,17 @@ private fun PlayerCover(track: Track, modifier: Modifier, showLyrics: () -> Unit
 @UnstableApi
 @Composable
 private fun PlayerMetadata(track: Track, model: NativeViewModel, compact: Boolean = false) {
+    val available = nativeProviderAvailable(model, track.providerId)
     Column(verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 6.dp)) {
         Text(track.title.ifBlank { stringResource(R.string.native_unknown_song) },
-            Modifier.clickable(enabled = track.providerId == "qqmusic") { model.navigate(NativeRoute("song", track.id)) },
-            style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineMedium,
+            Modifier.pluginRegion(model, "track-title").clickable(enabled = available) { model.openTrack(track) },
+            style = pluginTextStyle(model, if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineMedium),
             fontWeight = FontWeight.SemiBold, maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis)
+        NativePluginSongBadges(model, track)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             track.artistLinks.forEach { artist ->
-                Text(artist.title, Modifier.clickable(enabled = track.providerId == "qqmusic" && artist.id.isNotBlank()) {
-                    model.navigate(NativeRoute("artist", artist.id))
+                Text(artist.title, Modifier.clickable(enabled = available && artist.id.isNotBlank()) {
+                    model.navigate(NativeRoute("artist", artist.id, providerId = track.providerId, profileId = track.profileId))
                 }.padding(vertical = 4.dp), style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.65f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -191,6 +194,7 @@ private fun PlayerMetadata(track: Track, model: NativeViewModel, compact: Boolea
 @UnstableApi
 @Composable
 private fun PlayerSongInfo(track: Track, player: PlayerState, model: NativeViewModel) {
+    val available = nativeProviderAvailable(model, track.providerId)
     val qualityBusy by model.qualityBusy.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -198,10 +202,10 @@ private fun PlayerSongInfo(track: Track, player: PlayerState, model: NativeViewM
             PlayerFavorite(track, model)
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            QualityPicker(player.selection.requested, player.selection, enabled = track.providerId == "qqmusic" && !qualityBusy, compact = true) { model.changeQuality(it, current = true) }
+            QualityPicker(player.selection.requested, player.selection, enabled = available && !qualityBusy, compact = true) { model.changeQuality(it, current = true) }
             track.albumLink?.let { album ->
-                Text(album.title, Modifier.weight(1f).clickable(enabled = track.providerId == "qqmusic" && album.id.isNotBlank()) {
-                    model.navigate(NativeRoute("album", album.id))
+                Text(album.title, Modifier.weight(1f).clickable(enabled = available && album.id.isNotBlank()) {
+                    model.navigate(NativeRoute("album", album.id, providerId = track.providerId, profileId = track.profileId))
                 }.padding(start = 8.dp, top = 8.dp, bottom = 8.dp), style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -216,7 +220,7 @@ private fun PlayerFavorite(track: Track, model: NativeViewModel) {
     val favorites by model.favorites.collectAsStateWithLifecycle()
     val pending by model.pendingFavorites.collectAsStateWithLifecycle()
     val favorite = favorites[track.key] ?: track.favorite
-    IconButton(enabled = track.key !in pending && (!account.authenticated || (account.canFavorite && track.writable)),
+    IconButton(enabled = track.key !in pending && (!account.authenticated || account.canFavorite(track)),
         onClick = { model.favorite(track) }, modifier = Modifier.testTag("player-favorite")) {
         if (track.key in pending) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
         else Icon(if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -282,7 +286,7 @@ private fun PlayerControls(player: PlayerState, model: NativeViewModel, modifier
             IconButton(onClick = { model.command("player_next") }, modifier = Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.ic_player_skip_next), stringResource(R.string.native_next), Modifier.size(32.dp))
             }
-            IconButton(onClick = { model.navigate(NativeRoute("queue")) }) {
+            IconButton(onClick = { model.openQueue() }) {
                 Icon(painterResource(R.drawable.ic_player_queue_music), stringResource(R.string.native_queue), Modifier.size(26.dp), tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
             }
         }

@@ -74,7 +74,10 @@ fn event_channel_names_match_adr004() {
     assert_eq!(CHANNEL_HOST_UPDATE, "host://update");
     assert_eq!(CHANNEL_CORE_LOG, "core://log");
     assert_eq!(CHANNEL_ACCOUNT_CHANGED, "account://changed");
-    assert_eq!(CORE_EVENT_CHANNELS.len(), 9);
+    assert!(CORE_EVENT_CHANNELS.contains(&yaqmc_protocol::CHANNEL_PLUGIN_UPDATE_PROGRESS));
+    assert!(CORE_EVENT_CHANNELS.contains(&yaqmc_protocol::CHANNEL_PROVIDER_LOCAL_FILES));
+    assert!(CORE_EVENT_CHANNELS.contains(&yaqmc_protocol::CHANNEL_PROVIDER_PROFILES_CHANGED));
+    assert_eq!(CORE_EVENT_CHANNELS.len(), 12);
     assert_eq!(HOST_EVENT_CHANNELS.len(), 6);
 }
 

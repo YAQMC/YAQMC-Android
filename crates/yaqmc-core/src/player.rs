@@ -2507,17 +2507,47 @@ fn source_failure(error: &PlaybackSourceError) -> PlaybackFailure {
         ),
         PlaybackSourceError::EntitlementInsufficient => (
             "entitlement-insufficient",
-            "The active QQ Music account is not entitled to this track or quality.",
+            "The active platform account is not entitled to this track or quality.",
+            false,
+        ),
+        PlaybackSourceError::MembershipRequired => (
+            "membership-required",
+            "The platform did not grant this account access to the membership track.",
+            false,
+        ),
+        PlaybackSourceError::PurchaseRequired => (
+            "purchase-required",
+            "This track requires a separate purchase by the current account.",
+            false,
+        ),
+        PlaybackSourceError::CopyrightRestricted => (
+            "copyright-restricted",
+            "The platform does not permit playback of this track under its licensing restrictions.",
+            false,
+        ),
+        PlaybackSourceError::ProviderUnsupported => (
+            "provider-playback-unsupported",
+            "The music plugin does not support this playback operation.",
+            false,
+        ),
+        PlaybackSourceError::ProviderUnavailable => (
+            "provider-unavailable",
+            "The music plugin is unavailable; check its configuration and permissions.",
+            false,
+        ),
+        PlaybackSourceError::ProviderFailure => (
+            "provider-playback-failed",
+            "The music plugin could not resolve a valid playback source.",
             false,
         ),
         PlaybackSourceError::EntitlementUnknown => (
             "entitlement-unknown",
-            "The QQ Music account entitlement could not be confirmed.",
+            "The platform account entitlement could not be confirmed.",
             true,
         ),
         PlaybackSourceError::AuthenticationExpired => (
             "authentication-expired",
-            "The QQ Music session expired and must be authorized again.",
+            "The platform session expired and must be authorized again.",
             false,
         ),
         PlaybackSourceError::TrackUnavailable => (
@@ -2532,7 +2562,7 @@ fn source_failure(error: &PlaybackSourceError) -> PlaybackFailure {
         ),
         PlaybackSourceError::DecryptionFailed => (
             "media-decryption-failed",
-            "The encrypted QQ Music source could not be decrypted.",
+            "The encrypted media source could not be decrypted.",
             true,
         ),
         PlaybackSourceError::Cancelled => (
@@ -2816,6 +2846,7 @@ mod tests {
 
     fn lyric_document() -> LyricDocument {
         LyricDocument {
+            comments: Vec::new(),
             song_id: "one".to_owned(),
             sync_mode: LyricSyncMode::Word,
             metadata: LyricMetadata {
@@ -3621,6 +3652,8 @@ mod tests {
         );
         let mut first = song("qq-first", 10_000);
         first.provider = Some(ProviderTrackReference {
+            origin_provider_id: None,
+            profile_id: yaqmc_provider_api::DEFAULT_PROFILE_ID.to_owned(),
             provider_id: "qqmusic".to_owned(),
             track_id: first.id.clone(),
             numeric_id: None,
@@ -3629,6 +3662,8 @@ mod tests {
         });
         let mut disabled = song("plugin-disabled", 10_000);
         disabled.provider = Some(ProviderTrackReference {
+            origin_provider_id: None,
+            profile_id: yaqmc_provider_api::DEFAULT_PROFILE_ID.to_owned(),
             provider_id: "plugin.disabled".to_owned(),
             track_id: disabled.id.clone(),
             numeric_id: None,
@@ -3637,6 +3672,8 @@ mod tests {
         });
         let mut last = song("qq-last", 10_000);
         last.provider = Some(ProviderTrackReference {
+            origin_provider_id: None,
+            profile_id: yaqmc_provider_api::DEFAULT_PROFILE_ID.to_owned(),
             provider_id: "qqmusic".to_owned(),
             track_id: last.id.clone(),
             numeric_id: None,
@@ -4322,6 +4359,8 @@ mod tests {
     fn qq_song(id: &str, duration_ms: u64) -> Song {
         let mut track = song(id, duration_ms);
         track.provider = Some(ProviderTrackReference {
+            origin_provider_id: None,
+            profile_id: yaqmc_provider_api::DEFAULT_PROFILE_ID.to_owned(),
             provider_id: "qqmusic".to_owned(),
             track_id: id.to_owned(),
             numeric_id: None,

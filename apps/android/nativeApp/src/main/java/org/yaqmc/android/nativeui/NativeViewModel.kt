@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -32,7 +33,7 @@ import org.yaqmc.android.core.MobileLoginOwner
 import org.yaqmc.android.core.MobileLoginPolicy
 import org.yaqmc.android.R
 
-internal data class NativeRoute(val kind: String = "home", val id: String = "", val query: String = "", val searchKind: String = "song", val playlist: String = "", val tab: String = "top")
+internal data class NativeRoute(val kind: String = "home", val id: String = "", val query: String = "", val searchKind: String = "song", val playlist: String = "", val tab: String = "top", val providerId: String = "qqmusic", val profileId: String = "default", val pluginId: String = "")
 private data class NativeRootState(val route: NativeRoute, val backStack: List<NativeRoute>)
 internal data class PageState(val page: CatalogPage = CatalogPage(titleFor("home")), val loading: Boolean = false, val error: NativeText? = null, val loadingMore: Boolean = false, val moreError: NativeText? = null, val loaded: Boolean = false)
 
@@ -43,6 +44,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     },
 ) : AndroidViewModel(application), CoreManager.Callback {
     constructor(application: Application) : this(application, NativeCore(application))
+    val plugins = NativePlugins(application, core, viewModelScope)
     private val _route = MutableStateFlow(NativeRoute())
     val route = _route.asStateFlow()
     private val _selectedRoot = MutableStateFlow("home")
@@ -119,6 +121,9 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     private val snapshots = Channel<String>(Channel.CONFLATED)
     private var observing = false
     private var oauthAttempt: String? = null
+    private var oauthScope: Pair<String, String>? = null
+    private val _loginMethods = MutableStateFlow<List<JSONObject>>(emptyList())
+    val loginMethods = _loginMethods.asStateFlow()
     private var accountJob: Job? = null
     private var revalidationJob: Job? = null
     private var favoriteAuthorityJob: Job? = null
@@ -128,17 +133,41 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     private var lastAccountRefreshAt = -60_000L
     private var lastQueueJson = ""
     private var lastQueue = emptyList<Track>()
+    private var accountScope = "qqmusic" to "default"
+
+    private fun provider(id: String = route.value.providerId, profileId: String = if (id == route.value.providerId) route.value.profileId else "default") =
+        JSONObject().put("providerId", id).put("profileId", profileId)
+    private fun scopedRoute(kind: String, id: String = "") = NativeRoute(kind, id, providerId = route.value.providerId, profileId = route.value.profileId)
+    private fun rootKey(kind: String) = if (route.value.providerId == "qqmusic" && route.value.profileId == "default") kind else "${route.value.providerId}:${route.value.profileId}:$kind"
+    fun selectProvider(id: String) { navigate(NativeRoute("home", providerId = id), root = true) }
+    fun openLibrary(kind: String) = navigate(scopedRoute(kind))
+    fun openTrack(track: Track) = navigate(NativeRoute("song", track.id, providerId = track.providerId, profileId = track.profileId))
+    fun openPlayer() = navigate(NativeRoute("player", providerId = player.value.current?.providerId ?: route.value.providerId, profileId = player.value.current?.profileId ?: route.value.profileId))
+    fun openQueue() = navigate(NativeRoute("queue", providerId = player.value.current?.providerId ?: route.value.providerId, profileId = player.value.current?.profileId ?: route.value.profileId))
 
     init {
+        viewModelScope.launch {
+            route.map { it.providerId to it.profileId }.distinctUntilChanged().drop(1).collectLatest { (providerId, profileId) ->
+                _account.value = AccountUi(providerId = providerId, profileId = profileId)
+                _favorites.value = emptyMap(); _playlistSummaries.value = emptyMap(); closePicker()
+                runCatching { refreshAccount() }
+            }
+        }
         viewModelScope.launch(Dispatchers.Default) {
             for (json in snapshots) runCatching { acceptPlayer(JSONObject(json)) }
         }
         viewModelScope.launch {
-            player.map { it.current?.let { track -> track.providerId to track.id } }.distinctUntilChanged().collectLatest { key ->
+            player.map { it.current?.let { track -> Triple(track.providerId, track.profileId, track.id) } }.distinctUntilChanged().collectLatest { key ->
                 _lyrics.value = Lyrics()
-                if (key != null) try {
-                    val document = core.invoke("provider_lyrics", provider(key.first).put("id", key.second)) as? JSONObject
-                    if (document != null) _lyrics.value = withContext(Dispatchers.Default) { NativeModels.lyrics(document) }
+                plugins.present(null)
+                try {
+                    if (key != null) {
+                    val document = core.invoke("provider_lyrics", provider(key.first, key.second).put("id", key.third)) as? JSONObject
+                    if (document != null) {
+                        _lyrics.value = withContext(Dispatchers.Default) { NativeModels.lyrics(document) }
+                        plugins.present(document)
+                    }
+                    }
                 } catch (error: CancellationException) { throw error }
                 catch (_: Exception) { /* Lyrics are optional; keep playback usable on a lyrics failure. */ }
             }
@@ -150,6 +179,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         if (observing) return
         observing = true
         CoreManager.addCallback(this)
+        plugins.refresh()
         // Events can be missed or their pending refresh cancelled while stopped.
         if (route.value.kind == "statistics") loadStatistics(quiet = true)
         action {
@@ -173,6 +203,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     override fun onCleared() {
         stopObserving()
+        plugins.close()
         snapshots.close()
         super.onCleared()
     }
@@ -180,6 +211,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     override fun onCoreResponse(id: Long, json: String) = Unit
     override fun onCoreEvent(sequence: Long, channel: String, json: String) {
         when (channel) {
+            "plugin://changed", "plugin://update-progress" -> plugins.refresh()
             "player://snapshot" -> snapshots.trySend(json)
             "api://event" -> viewModelScope.launch {
                 runCatching { JSONObject(json) }.getOrNull()?.let { event ->
@@ -241,7 +273,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         cancelPlaybackPreparation()
         val nextRoot = selectedRoot(next.kind).takeIf { it in nativeRootDestinations }
         if (nextRoot != null && nextRoot != _selectedRoot.value) {
-            rootStates[_selectedRoot.value] = NativeRootState(_route.value, backStack.toList())
+            rootStates[rootKey(_selectedRoot.value)] = NativeRootState(_route.value, backStack.toList())
         }
         if (nextRoot != null) _selectedRoot.value = nextRoot
         if (root) backStack.clear() else backStack += _route.value
@@ -254,16 +286,16 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     fun selectRoot(kind: String) {
         if (kind !in nativeRootDestinations) return
         if (kind == _selectedRoot.value) {
-            if (_route.value.kind != kind) navigate(backStack.firstOrNull { it.kind == kind } ?: NativeRoute(kind), root = true)
+            if (_route.value.kind != kind) navigate(backStack.firstOrNull { it.kind == kind } ?: scopedRoute(kind), root = true)
             return
         }
         cancelPlaybackPreparation()
-        rootStates[_selectedRoot.value] = NativeRootState(_route.value, backStack.toList())
-        val saved = rootStates[kind]
+        rootStates[rootKey(_selectedRoot.value)] = NativeRootState(_route.value, backStack.toList())
+        val saved = rootStates[rootKey(kind)]
         _selectedRoot.value = kind
         backStack.clear()
         if (saved != null) backStack += saved.backStack
-        _route.value = saved?.route ?: NativeRoute(kind)
+        _route.value = saved?.route ?: scopedRoute(kind)
         if (_route.value.kind != "statistics") statisticsRefreshJob?.cancel()
         pageNumber = 1
         load()
@@ -281,10 +313,11 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     fun open(item: CatalogItem) = navigate(NativeRoute(item.kind, item.id,
         playlist = if (item.kind == "account-playlist" ||
-            (item.kind == "playlist" && item.json.optJSONArray("tracks").objects().isNotEmpty())) item.json.toString() else ""))
+            (item.kind == "playlist" && item.json.optJSONArray("tracks").objects().isNotEmpty())) item.json.toString() else "",
+        providerId = item.providerId.ifBlank { route.value.providerId }, profileId = item.profileId))
 
     fun search(query: String, kind: String = _route.value.searchKind) {
-        val next = NativeRoute("search", query = query.trim(), searchKind = kind)
+        val next = NativeRoute("search", query = query.trim(), searchKind = kind, providerId = route.value.providerId, profileId = route.value.profileId)
         if (next != _route.value) navigate(next, root = true)
     }
 
@@ -302,7 +335,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         if (refresh && _preparingPage.value) cancelPlaybackPreparation()
         pageJob?.cancel()
         val target = _route.value
-        if (target.kind in setOf("library", "account", "settings", "storage-settings", "lyric-settings", "lyric-presets", "appearance-settings", "player", "queue", "statistics", "diagnostics", "about", "issue-report")) return
+        if (target.kind in nativeUtilityDestinations || target.kind in setOf("library", "player", "queue")) return
         if (!refresh && !more) pageCache[target]?.let { cached ->
             pageNumber = cached.second
             _page.value = PageState(page = cached.first, loaded = true)
@@ -381,7 +414,6 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     fun playQueueEntry(id: String) {
         val entry = player.value.entries.find { it.id == id } ?: return
-        if (entry.track.providerId != "qqmusic") { notify(R.string.native_unsupported_provider); return }
         if (player.value.authoritative) command("player_play_queue_entry", JSONObject().put("entryId", id))
         else command("player_play_from_queue", JSONObject().put("index", entry.index))
     }
@@ -465,7 +497,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     private suspend fun startTracks(tracks: List<Track>, start: Track? = tracks.firstOrNull(), shuffle: Boolean? = null, continuation: String? = null) {
         val request = JSONObject().put("tracks", JSONArray(tracks.map { it.json })).put("startAtId", start?.id)
         if (continuation != null) {
-            request.put("providerId", "qqmusic").put("kind", continuation)
+            request.put("providerId", start?.providerId ?: route.value.providerId).put("kind", continuation)
             if (continuation == "radar" && start != null) request.put("seedTrackIds", JSONArray(listOf(start.id)))
             executeCommand("continuation_start", JSONObject().put("request", request))
         } else {
@@ -478,14 +510,15 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         if (_preparingCard.value == item.playbackKey) return
         cancelPlaybackPreparation()
         val serial = preparationSerial
+        val source = NativeRoute(item.kind, item.id, providerId = item.providerId.ifBlank { route.value.providerId }, profileId = item.profileId)
         _preparingCard.value = item.playbackKey
         preparingCardJob = action {
             try {
                 val tracks = when {
-                    item.kind == "account-playlist" -> completePlaybackTracks(NativeRoute(item.kind, item.id, playlist = item.json.toString()))
+                    item.kind == "account-playlist" -> completePlaybackTracks(source.copy(playlist = item.json.toString()))
                     item.json.optJSONArray("tracks") != null -> NativeModels.detail(item.kind, item.json)
                         .tracks
-                    else -> completePlaybackTracks(NativeRoute(item.kind, item.id))
+                    else -> completePlaybackTracks(source)
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 if (tracks.isEmpty()) notify(R.string.native_empty)
@@ -511,17 +544,17 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     }
 
     fun favorite(track: Track) {
-        if (!account.value.authenticated) { navigate(NativeRoute("account")); return }
-        if (!account.value.canFavorite || !track.writable || track.key in _pendingFavorites.value) return
+        if (!account.value.authenticated) { navigate(NativeRoute("account", providerId = track.providerId, profileId = track.profileId)); return }
+        if (!account.value.canFavorite(track) || track.key in _pendingFavorites.value) return
         val desired = !(_favorites.value[track.key] ?: track.favorite)
         val revision = account.value.revision
         favoriteMutationVersions[track.key] = ++favoriteMutationSerial
         _pendingFavorites.value += track.key
         action {
             try {
-                val result = core.objectResult("provider_set_favorite", provider(track.providerId).put("request", JSONObject()
+                val result = core.objectResult("provider_set_favorite", provider(track.providerId, track.profileId).put("request", JSONObject()
                     .put("trackId", track.id).put("favorite", desired).put("clientOperationId", UUID.randomUUID().toString())))
-                if (revision != account.value.revision || result.optLong("authRevision", -1) != revision) return@action
+                if (!account.value.owns(track) || revision != account.value.revision || result.optLong("authRevision", -1) != revision) return@action
                 if (result.text("status") !in setOf("applied", "reconciled")) {
                     pageCache.clear()
                     if (route.value.kind == "favorites") load(refresh = true)
@@ -540,7 +573,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     }
 
     fun openPicker(track: Track) {
-        if (!account.value.authenticated) { navigate(NativeRoute("account")); return }
+        if (!account.value.authenticated) { navigate(NativeRoute("account", providerId = track.providerId, profileId = track.profileId)); return }
         if (!account.value.canWrite(track)) return
         pickerJob?.cancel()
         _playlistErrors.value = emptyMap()
@@ -558,7 +591,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         val revision = account.value.revision
         pickerJob = viewModelScope.launch {
             try {
-                val result = catalog.load(NativeRoute("account-playlists"), reset, 1, if (reset) null else before.cursor)
+                val result = catalog.load(NativeRoute("account-playlists", providerId = before.track.providerId, profileId = before.track.profileId), reset, 1, if (reset) null else before.cursor)
                 if (_picker.value?.track?.key != before.track.key || revision != account.value.revision) return@launch
                 if (result.raw.has("authRevision") && result.raw.optLong("authRevision") != revision) throw CoreFailure("authentication-expired", "")
                 val cards = result.sections.flatMap { it.cards }
@@ -572,7 +605,9 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     }
 
     fun mutatePlaylist(operation: String, summary: JSONObject, track: Track? = null, title: String? = null, collected: Boolean? = null) {
-        if (!account.value.authenticated) { navigate(NativeRoute("account")); return }
+        if (!account.value.authenticated) { navigate(scopedRoute("account")); return }
+        val scope = account.value.providerId to account.value.profileId
+        if (scope != (route.value.providerId to route.value.profileId)) return
         val id = summary.text("id")
         val projected = _playlistSummaries.value[id] ?: summary
         val capability = when (operation) { "rename" -> "canRename"; "delete" -> "canDelete"; "add" -> "canAddTracks"; "remove" -> "canRemoveTracks"; else -> null }
@@ -580,7 +615,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         if (capability != null && !projected.canEdit(capability)) return
         if (operation == "rename" && (title == null || !validPlaylistTitle(title))) return
         if (operation in setOf("add", "remove") && (track == null || !account.value.canWrite(track))) return
-        if (operation == "collect" && (!id.startsWith("qqmusic:playlist:") || projected.text("ownership") == "owned")) return
+        if (operation == "collect" && projected.text("ownership") == "owned") return
         val method = when (operation) {
             "rename" -> "provider_rename_playlist"; "delete" -> "provider_delete_playlist"
             "add" -> "provider_add_playlist_track"; "remove" -> "provider_remove_playlist_track"
@@ -595,8 +630,8 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
                 title?.let { request.put("title", it.trim()) }
                 track?.let { request.put("trackId", it.id) }
                 collected?.let { request.put("collected", it) }
-                val result = core.objectResult(method, provider().put("request", request))
-                if (revision != account.value.revision || result.optLong("authRevision", -1) != revision) return@action
+                val result = core.objectResult(method, provider(scope.first, scope.second).put("request", request))
+                if (scope != (account.value.providerId to account.value.profileId) || revision != account.value.revision || result.optLong("authRevision", -1) != revision) return@action
                 pageCache.clear()
                 if (result.text("status") !in setOf("applied", "reconciled")) {
                     if (route.value.id == id) load(refresh = true)
@@ -612,7 +647,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
                 if (operation == "add" && _picker.value?.track?.key == track?.key) closePicker()
                 if (operation == "delete") {
                     _playlistSummaries.value -= id
-                    if (route.value.id == id && !back()) navigate(NativeRoute("account-playlists"))
+                    if (route.value.id == id && !back()) navigate(scopedRoute("account-playlists"))
                 } else if (route.value.id == id) {
                     result.optJSONObject("playlist")?.let { updated ->
                         if (route.value.kind == "account-playlist") _route.value = route.value.copy(playlist = updated.toString())
@@ -621,6 +656,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
                 }
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) {
+                if (scope != (account.value.providerId to account.value.profileId)) return@action
                 if (revision == account.value.revision) _playlistErrors.value += id to errorText(error, R.string.native_action_failed)
                 throw error
             } finally { _pendingPlaylists.value -= id }
@@ -630,11 +666,13 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     fun changeQuality(value: String, current: Boolean = false) {
         if (_qualityBusy.value || value !in NativePlayback.qualities) return
         val state = player.value
-        if (current && (state.current?.providerId != "qqmusic" || state.selection.capabilities.any { it.quality == value && it.unavailable })) return
+        val currentTrack = state.current
+        if (current && (currentTrack == null || state.selection.capabilities.any { it.quality == value && it.unavailable })) return
         _qualityBusy.value = true
         action {
             try {
-                val result = core.objectResult(if (current) "provider_set_current_quality" else "provider_set_preferred_quality", provider().put("quality", value))
+                val identity = if (current) provider(currentTrack!!.providerId, currentTrack.profileId) else provider()
+                val result = core.objectResult(if (current) "provider_set_current_quality" else "provider_set_preferred_quality", identity.put("quality", value))
                 if (current) snapshots.trySend(result.toString()) else _quality.value = result.text("preferredQuality", value)
             } finally { _qualityBusy.value = false }
         }
@@ -651,9 +689,14 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     fun notify(resource: Int) { _message.value = NativeText(resource) }
 
     suspend fun refreshAccount() {
-        val value = core.objectResult("provider_account_snapshot", provider())
+        val scope = route.value.providerId to route.value.profileId
+        val capabilities = plugins.state.value.providers.firstOrNull { it.text("providerId") == scope.first }?.optJSONObject("capabilities")
+        val value = if (capabilities?.has("account") == true && !capabilities.optBoolean("account")) {
+            JSONObject().put("state", "guest").put("providerId", scope.first).put("profileId", scope.second).put("capabilities", JSONObject())
+        } else core.objectResult("provider_account_snapshot", provider(scope.first, scope.second))
+        if (scope != (route.value.providerId to route.value.profileId)) return
         val next = AccountUi.parse(value)
-        if (next.revision != _account.value.revision || next.authenticated != _account.value.authenticated) {
+        if (accountScope != scope || next.revision != _account.value.revision || next.authenticated != _account.value.authenticated) {
             cancelPlaybackPreparation()
             favoriteAuthorityJob?.cancel()
             favoriteAuthorityRevision = null
@@ -668,7 +711,8 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
             }
         }
         _account.value = next
-        MobileLoginOwner.adopt(value, "qqmusic")
+        accountScope = scope
+        if (scope.first == "qqmusic") MobileLoginOwner.adopt(value, "qqmusic")
         hydrateFavorites()
     }
 
@@ -678,11 +722,12 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         favoriteAuthorityJob = viewModelScope.launch {
             try {
                 val version = favoriteMutationSerial
-                val page = catalog.load(NativeRoute("favorites"), false, 1, null)
+                val source = NativeRoute("favorites", providerId = snapshot.providerId, profileId = snapshot.profileId)
+                val page = catalog.load(source, false, 1, null)
                 if (account.value.revision != snapshot.revision || !account.value.authenticated || page.raw.optLong("authRevision", -1) != snapshot.revision) return@launch
                 _favorites.value += page.tracks.filter { it.key !in _pendingFavorites.value && (favoriteMutationVersions[it.key] ?: 0) <= version }.associate { it.key to true }
                 favoriteAuthorityRevision = snapshot.revision
-                if (route.value.kind != "favorites" && favoriteMutationSerial == version) pageCache.putIfAbsent(NativeRoute("favorites"), page.copy(hasMore = page.hasMore && !page.stale) to 1)
+                if (route.value.kind != "favorites" && favoriteMutationSerial == version) pageCache.putIfAbsent(source, page.copy(hasMore = page.hasMore && !page.stale) to 1)
             } catch (error: CancellationException) { throw error }
             catch (_: Exception) { /* Keep catalog playback available; the library still exposes retry. */ }
         }
@@ -707,30 +752,48 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     }
 
     fun startLogin(method: String, smallestWidth: Int, oauth: (JSONObject) -> Unit, mobile: (String) -> Unit) = accountAction {
-        if (MobileLoginPolicy.shouldUseQqMusicApp(smallestWidth, "qqmusic", method)) {
+        val scope = route.value.providerId to route.value.profileId
+        if (_loginMethods.value.firstOrNull { it.text("id") == method }?.text("flow") == "qr" && route.value.providerId != "qqmusic") {
+            val snapshot = core.objectResult("provider_auth_start", provider(scope.first, scope.second).put("mobile", false), host = true)
+            MobileLoginOwner.adopt(snapshot, scope.first)
+            refreshAccount()
+            return@accountAction
+        }
+        if (route.value.providerId == "qqmusic" && MobileLoginPolicy.shouldUseQqMusicApp(smallestWidth, "qqmusic", method)) {
             var snapshot = core.objectResult("provider_account_snapshot", provider())
             if (snapshot.text("state") !in MobileLoginLeaseRegistryStates) snapshot = core.objectResult("provider_auth_start", provider().put("mobile", true), host = true)
             MobileLoginOwner.adopt(snapshot, "qqmusic")
             refreshAccount()
             MobileLoginPolicy.validateLaunchUrl(snapshot.text("launchUrl"))?.let { mobile(it.authorizationUrl) }
         } else {
-            val prepared = core.objectResult("provider_auth_oauth_prepare", provider().put("methodId", method), host = true)
+            val prepared = core.objectResult("provider_auth_oauth_prepare", provider(scope.first, scope.second).put("methodId", method), host = true)
             oauthAttempt = prepared.text("attemptId").takeIf(String::isNotBlank)
+            oauthScope = scope
             if (oauthAttempt == null) throw CoreFailure("native.login.invalid", "")
             refreshAccount()
             try { oauth(prepared) } catch (error: Exception) { finishOAuth(null); throw error }
         }
     }
 
-    fun finishOAuth(callback: String?) = action {
+    fun finishOAuth(callback: String?, cookies: String? = null) = action {
         val attempt = oauthAttempt ?: return@action
         oauthAttempt = null
-        val params = provider().put("attemptId", attempt)
+        val scope = oauthScope ?: (route.value.providerId to route.value.profileId)
+        oauthScope = null
+        val params = provider(scope.first, scope.second).put("attemptId", attempt)
+        if (cookies != null) params.put("browserSessionCookies", JSONArray(cookies))
         if (callback == null) core.invoke("provider_auth_oauth_cancel", params, host = true)
         else core.invoke("provider_auth_oauth_complete", params.put("callbackUrl", callback), host = true)
         refreshAccount()
         pageCache.clear()
         load(refresh = true)
+    }
+
+    fun loadLoginMethods() = action {
+        val scope = route.value.providerId to route.value.profileId
+        _loginMethods.value = emptyList()
+        val methods = (core.invoke("provider_account_login_methods", provider(scope.first, scope.second)) as? JSONArray).objects()
+        if (scope == (route.value.providerId to route.value.profileId)) _loginMethods.value = methods
     }
 
     fun cancelLogin() = accountAction {
@@ -741,7 +804,11 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     fun refreshQr() = accountAction {
         val attempt = account.value.attempt
-        if (attempt.isNotBlank()) core.invoke("provider_auth_refresh", provider().put("attemptId", attempt), host = true)
+        if (attempt.isNotBlank()) {
+            val scope = route.value.providerId to route.value.profileId
+            val snapshot = core.objectResult("provider_auth_refresh", provider(scope.first, scope.second).put("attemptId", attempt), host = true)
+            MobileLoginOwner.adopt(snapshot, scope.first)
+        }
         refreshAccount()
     }
 
@@ -925,8 +992,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         _cacheError.value = false
         viewModelScope.launch {
             try {
-                if (clear) core.invoke("provider_clear_cache", provider())
-                _cache.value = NativeCacheStats.parse(core.objectResult("provider_cache_stats", provider()))
+                _cache.value = NativeCacheStats.parse(core.objectResult(if (clear) "app_clear_cache" else "app_cache_stats"))
                 if (clear) _message.value = NativeText(R.string.native_cache_cleared)
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) {

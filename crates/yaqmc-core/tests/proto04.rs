@@ -72,7 +72,10 @@ fn registry_core_methods_match_dispatch_arms() {
         .map(|spec| spec.name)
         .collect();
     assert_eq!(registry, core_dispatch_methods());
-    let source = include_str!("../src/server/methods.rs");
+    let source = concat!(
+        include_str!("../src/server/methods.rs"),
+        include_str!("../src/server/methods/plugins.rs")
+    );
     let arms = source
         .split_once("match method_name {")
         .expect("dispatch match")

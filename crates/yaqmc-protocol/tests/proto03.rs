@@ -7,9 +7,9 @@ use yaqmc_protocol::{
 };
 
 #[test]
-fn registry_is_the_180_method_single_source_of_truth() {
+fn registry_is_the_single_source_of_truth_for_native_and_host_methods() {
     let registry = methods();
-    assert_eq!(registry.len(), 164 + PROTOCOL_ONLY_METHODS.len());
+    assert_eq!(registry.len(), 207);
     let names: HashSet<&str> = registry.iter().map(|spec| spec.name).collect();
     assert_eq!(names.len(), registry.len());
     assert!(method("player_snapshot").is_some());
@@ -25,7 +25,12 @@ fn registry_is_the_180_method_single_source_of_truth() {
     assert!(method("not_a_method").is_none());
     for name in PROTOCOL_ONLY_METHODS {
         assert!(method(name).is_some(), "{name}");
-        assert_eq!(method(name).expect(name).owner, MethodOwner::Core);
+        let owner = if name.starts_with("host_updater_") {
+            MethodOwner::Host
+        } else {
+            MethodOwner::Core
+        };
+        assert_eq!(method(name).expect(name).owner, owner, "{name}");
     }
 }
 
@@ -59,10 +64,13 @@ fn method_caps_never_exceed_the_hard_cap_and_default_to_one_mib() {
     for spec in methods() {
         assert!(spec.request_cap > 0 && spec.request_cap <= FRAME_HARD_CAP_BYTES);
         assert!(spec.response_cap > 0 && spec.response_cap <= FRAME_HARD_CAP_BYTES);
-        if spec.name != "plugin_read_asset" {
-            assert_eq!(spec.request_cap, DEFAULT_METHOD_PAYLOAD_BYTES);
-            assert_eq!(spec.response_cap, DEFAULT_METHOD_PAYLOAD_BYTES);
-        }
+        assert_eq!(spec.request_cap, DEFAULT_METHOD_PAYLOAD_BYTES);
+        let expected = match spec.name {
+            "plugin_read_asset" => method("plugin_read_asset").unwrap().response_cap,
+            "provider_playlist" | "qqmusic_playlist" => 16 * 1024 * 1024,
+            _ => DEFAULT_METHOD_PAYLOAD_BYTES,
+        };
+        assert_eq!(spec.response_cap, expected, "{}", spec.name);
     }
 
     let asset = method("plugin_read_asset").expect("plugin_read_asset");
