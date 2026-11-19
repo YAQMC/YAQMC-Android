@@ -160,8 +160,11 @@ for (const name of packages) {
   const directory = path.join(root, 'node_modules', name);
   const metadata = JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8'));
   notices += `\n===== ${name} ${metadata.version} (${metadata.license ?? 'see license'}) =====\n`;
-  for (const file of await licenseFiles(directory))
-    notices += `\n${path.relative(directory, file)}\n${await readFile(file, 'utf8')}\n`;
+  for (const file of await licenseFiles(directory)) {
+    const relativePath = path.relative(directory, file).split(path.sep).join('/');
+    const license = (await readFile(file, 'utf8')).replaceAll('\r\n', '\n');
+    notices += `\n${relativePath}\n${license}\n`;
+  }
 }
 const licensePath = path.join(destination, '..', '..', 'licenses', 'plugin-runtime.txt');
 if (check) {
