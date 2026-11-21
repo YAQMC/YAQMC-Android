@@ -45,7 +45,7 @@ YAQMC-Android 是 [YAQMC](https://github.com/YAQMC/YAQMC) 的 Android 原生版�
 
 **覆盖安装。** `0.1.6` 及后续版本沿用新包名和本项目签名；从 `0.1.5` 或更早版本切换时，`0.1.6` 会单独安装，登录需重新授权。
 
-**反馈问题。** 从“设置 → 诊断与反馈”可提交脱敏诊断包。旧版可先用“分享诊断包”保存 ZIP，再到网站上传。遇到连续闪退，直接用浏览器填写出错前的操作、重开后的表现、应用版本和手机型号。提交成功后可凭反馈编号补充信息。[免登录反馈](https://ltzu.top/yaqmc/feedback) · [GitHub Issues](https://github.com/YAQMC/YAQMC-Android/issues)
+**反馈问题。** 从 0.1.8 起，打开“设置 → 诊断与反馈”就能直接提交脱敏诊断包，无需 GitHub 账号。使用 0.1.7 时，可在同一页面点“分享诊断包”，保存 ZIP 后到网站上传。遇到连续闪退，也可以直接用浏览器填写出错前的操作、重开后的表现、应用版本和手机型号。请保留提交成功后显示的反馈编号。[免登录反馈](https://ltzu.top/yaqmc/feedback) · [GitHub Issues](https://github.com/YAQMC/YAQMC-Android/issues)
 
 ## 后续方向
 
