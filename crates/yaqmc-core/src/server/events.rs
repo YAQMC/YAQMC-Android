@@ -208,6 +208,7 @@ pub fn spawn_account_restore_fanout(
     core: Arc<CoreHandle>,
     sink: Arc<dyn EventSink>,
 ) {
+    core.qq_music().begin_startup_restore();
     let sink = SequencedSink::new(sink);
     runtime.spawn(async move {
         // Reduced hosts (notably Android) do not compile the extension host. Its

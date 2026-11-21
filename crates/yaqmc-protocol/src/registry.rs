@@ -163,6 +163,7 @@ const METHODS: &[MethodSpec] = &[
     spec("provider_list", MethodOwner::Core, OriginClass::Main),
     spec("provider_status", MethodOwner::Core, OriginClass::Main),
     spec("provider_home", MethodOwner::Core, OriginClass::Main),
+    spec("provider_home_cached", MethodOwner::Core, OriginClass::Main),
     spec("provider_discover", MethodOwner::Core, OriginClass::Main),
     spec("provider_area", MethodOwner::Core, OriginClass::Main),
     spec("provider_library", MethodOwner::Core, OriginClass::Main),

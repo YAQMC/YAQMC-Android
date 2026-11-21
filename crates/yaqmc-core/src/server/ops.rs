@@ -463,33 +463,25 @@ pub async fn local_api_set_port(
 }
 
 pub fn diagnostics_clear_logs(logging: &LoggingHandle) -> usize {
-    let mut removed = 0usize;
-    let entries = match std::fs::read_dir(logging.log_dir()) {
-        Ok(entries) => entries,
-        Err(_) => return 0,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let is_log = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(|name| name.starts_with(logging::LOG_FILE_PREFIX))
-            .unwrap_or(false);
-        if is_log && std::fs::remove_file(&path).is_ok() {
-            removed += 1;
-        }
-    }
-    removed
+    let mut files = diagnostics::collect_log_files(logging.log_dir());
+    // The rolling appender still has the newest file open until its next rotation.
+    files.pop();
+    files
+        .iter()
+        .filter(|path| std::fs::remove_file(path).is_ok())
+        .count()
 }
 
 pub fn diagnostics_set_log_level(
     storage: &StorageService,
+    logging: &LoggingHandle,
     level: LogLevel,
 ) -> Result<LogLevel, String> {
-    storage
-        .set_setting(LOG_LEVEL_SETTING_KEY, level.as_str())
-        .map_err(stringify)?;
-    Ok(level)
+    logging.set_level(level, || {
+        storage
+            .set_setting(LOG_LEVEL_SETTING_KEY, level.as_str())
+            .map_err(stringify)
+    })
 }
 
 pub fn diagnostics_record_error(logging: &LoggingHandle, request: RecordErrorRequest) {
@@ -574,6 +566,7 @@ pub async fn issue_reporter_preview(
     host: &dyn HostDispatchHooks,
     draft: IssueDraft,
     request: DiagnosticsRequest,
+    host_details: Option<&str>,
 ) -> IssuePreview {
     let snapshot = assemble_diagnostics_snapshot(
         &core.player(),
@@ -586,7 +579,7 @@ pub async fn issue_reporter_preview(
     )
     .await;
     let label = host.renderer_label(&snapshot.platform);
-    issue_reporter::prepare_preview(&draft, &snapshot, &label)
+    issue_reporter::prepare_preview_with_host(&draft, &snapshot, &label, host_details)
 }
 
 pub fn live_platform_diagnostics(

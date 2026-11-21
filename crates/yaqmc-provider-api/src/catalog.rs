@@ -293,6 +293,23 @@ pub struct HomeFeed {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CachedHomeFeed {
+    pub feed: HomeFeed,
+    pub stale: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeCacheRead {
+    pub snapshot: Option<CachedHomeFeed>,
+    #[serde(default)]
+    pub awaiting_account: bool,
+    #[serde(default)]
+    pub refresh_required: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiscoverFeed {
     pub charts: Vec<Playlist>,
     #[serde(default)]

@@ -17,7 +17,8 @@ internal data class Track(val json: JSONObject) {
     val title: String = json.text("title")
     val artists: String = json.optJSONArray("artists").objects().joinToString(" / ") { it.text("name") }
     val album: String = json.optJSONObject("album")?.text("title").orEmpty()
-    val artwork: String = json.optJSONObject("artwork")?.text("src").orEmpty()
+    val artworkImage = NativeArtwork.parse(json.optJSONObject("artwork"), thumbnail = true)
+    val artwork: String get() = artworkImage?.source.orEmpty()
     val duration: Long = json.optLong("durationMs")
     val favorite: Boolean = json.optBoolean("isFavorite")
     val key: String = if (profileId == "default") "$providerId:$id" else "$providerId:$profileId:$id"
@@ -40,7 +41,7 @@ internal data class CatalogItem(
     val id: String = json.text("id", json.text("encArea"))
     val playbackKey: String = if (providerId.isBlank() || (providerId == "qqmusic" && profileId == "default")) "$kind:$id" else "$providerId:$profileId:$kind:$id"
     val title: String = json.text("title", json.text("name"))
-    val artwork: String = json.optJSONObject("artwork")?.text("src") ?: json.text("cover")
+    val artworkImage = NativeArtwork.parse(json.optJSONObject("artwork"), json.text("cover"))
     val subtitle: String = json.optJSONObject("artist")?.text("name")
         ?: json.optJSONObject("owner")?.text("displayName") ?: json.text("creator", json.text("subtitle", json.text("artist")))
     val playable: Boolean get() = kind in setOf("playlist", "album", "account-playlist")

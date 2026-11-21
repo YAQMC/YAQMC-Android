@@ -110,6 +110,16 @@ pub struct ProviderRefreshParams {
     #[allow(dead_code)] // validated from the raw provider envelope before typed parsing
     pub profile_id: Option<String>,
     pub refresh: bool,
+    #[serde(default)]
+    pub require_fresh: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderHomeCacheParams {
+    pub provider_id: String,
+    #[serde(default)]
+    pub wait_for_account: bool,
 }
 
 #[derive(Deserialize)]
@@ -491,6 +501,7 @@ pub struct ReorderParams {
 pub struct IssueReporterPreviewParams {
     pub draft: crate::issue_reporter::IssueDraft,
     pub request: DiagnosticsRequest,
+    pub host_details: Option<String>,
 }
 
 #[derive(Deserialize)]

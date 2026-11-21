@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -38,12 +39,15 @@ import org.yaqmc.android.R
 @OptIn(ExperimentalMaterial3Api::class)
 @UnstableApi
 @Composable
-internal fun Catalog(model: NativeViewModel, route: NativeRoute, share: (Track) -> Unit, reportDrawn: () -> Unit) {
+internal fun Catalog(model: NativeViewModel, route: NativeRoute, share: (Track) -> Unit, reportDrawn: () -> Unit,
+    homeArtworkViewport: HomeArtworkViewport? = null,
+) {
     val state by model.page.collectAsStateWithLifecycle()
     val account by model.account.collectAsStateWithLifecycle()
     val rememberedTab by model.discoverTab.collectAsStateWithLifecycle()
     val preparingPlayback by model.preparingPage.collectAsStateWithLifecycle()
     val failedPlayback by model.failedPagePlayback.collectAsStateWithLifecycle()
+    val catalogActionsEnabled = !state.awaitingAccount
     val accountPage = route.kind in setOf("favorites", "recent", "account-playlists", "account-playlist")
     val page = if (accountPage && !account.authenticated) CatalogPage(titleFor(route.kind)) else state.page
     val activeTab = when (route.kind) {
@@ -71,11 +75,14 @@ internal fun Catalog(model: NativeViewModel, route: NativeRoute, share: (Track) 
         }
         if (state.loading && !state.loaded) LinearProgressIndicator(Modifier.fillMaxWidth())
         PullToRefreshBox(isRefreshing = state.loading && state.loaded, onRefresh = { model.load(refresh = true) }, modifier = Modifier.weight(1f).fillMaxWidth()) {
-        LazyColumn(Modifier.fillMaxSize().testTag("catalog-list"), state = list, contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        val listModifier = Modifier.fillMaxSize().testTag("catalog-list").then(
+            if (homeArtworkViewport == null) Modifier else Modifier.onGloballyPositioned { homeArtworkViewport.coordinates = it },
+        )
+        LazyColumn(listModifier, state = list, contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             if (route.kind !in nativeRootDestinations && subtitle.isNotBlank()) item { Text(subtitle, style = MaterialTheme.typography.bodyMedium) }
             if (accountPage && !account.authenticated) item { AccountLibraryNotice(account, model) }
             if (accountPage && account.authenticated && !account.canRead(route.kind)) item { Text(stringResource(R.string.native_not_supported)) }
-            if (page.artwork.isNotBlank()) item { Artwork(page.artwork, Modifier.size(180.dp)) }
+            if (page.artwork.isNotBlank()) item { Artwork(page.artwork, Modifier.size(180.dp), homeArtworkViewport) }
             if (page.links.isNotEmpty()) item { EntityLinks(page.links, model) }
             if (page.metadata.isNotEmpty()) item { Column(verticalArrangement = Arrangement.spacedBy(4.dp)) { page.metadata.forEach { Text(it.resolve(), style = MaterialTheme.typography.bodyMedium) } } }
             if (route.kind in setOf("playlist", "account-playlist")) item { PlaylistActions(model, route, page) }
@@ -104,24 +111,26 @@ internal fun Catalog(model: NativeViewModel, route: NativeRoute, share: (Track) 
                 if (route.kind != "search" && (activeTab.isBlank() || section.tab != activeTab || section.continuation != null)) item("heading-$sectionIndex") {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(section.title.resolve(), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                        if (section.continuation != null && section.tracks.isNotEmpty()) TextButton(onClick = { model.play(section.tracks, continuation = section.continuation) }) { Text(stringResource(R.string.native_play)) }
+                        if (section.continuation != null && section.tracks.isNotEmpty()) TextButton(
+                            onClick = { model.play(section.tracks, continuation = section.continuation) }, enabled = catalogActionsEnabled,
+                        ) { Text(stringResource(R.string.native_play)) }
                     }
                 }
                 // The first home row is the three dedicated recommendation entry points.
                 if (route.kind == "home" && section.layoutKey == "for-you" && section.cards.isNotEmpty()) item("hero") {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) { items(section.cards, key = { it.id }) { card -> CatalogCard(card, model, Modifier.width(220.dp)) } }
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) { items(section.cards, key = { it.id }) { card -> CatalogCard(card, model, Modifier.width(220.dp), homeArtworkViewport, catalogActionsEnabled) } }
                 } else {
                     section.cards.chunked(columns).forEachIndexed { rowIndex, row ->
                         item("cards-$sectionIndex-$rowIndex") {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                row.forEach { card -> CatalogCard(card, model, Modifier.weight(1f)) }
+                                row.forEach { card -> CatalogCard(card, model, Modifier.weight(1f), homeArtworkViewport, catalogActionsEnabled) }
                                 repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
                             }
                         }
                     }
                 }
                 itemsIndexed(section.tracks, key = { index, track -> "$sectionIndex-$index-${track.key}" }) { _, track ->
-                    TrackRow(track, model, share, play = { model.playTrack(section.tracks, track, section.continuation) })
+                    TrackRow(track, model, share, homeArtworkViewport, enabled = catalogActionsEnabled, play = { model.playTrack(section.tracks, track, section.continuation) })
                 }
             }
             if (!state.loading && state.error == null && sections.all { it.cards.isEmpty() && it.tracks.isEmpty() } && (!accountPage || account.authenticated)) item { Text(stringResource(if (route.kind == "search" && route.query.isBlank()) R.string.native_enter_query else R.string.native_empty)) }
@@ -165,26 +174,27 @@ internal fun SearchField(model: NativeViewModel, route: NativeRoute) {
 
 @UnstableApi
 @Composable
-private fun CatalogCard(card: CatalogItem, model: NativeViewModel, modifier: Modifier = Modifier) {
+private fun CatalogCard(card: CatalogItem, model: NativeViewModel, modifier: Modifier, homeArtworkViewport: HomeArtworkViewport?, enabled: Boolean) {
     val preparingCard by model.preparingCard.collectAsStateWithLifecycle()
     val failedCard by model.failedCard.collectAsStateWithLifecycle()
     val preparing = preparingCard == card.playbackKey
     val failure = failedCard?.takeIf { it.first == card.playbackKey }?.second
+    val canOpen = enabled && card.navigable && !preparing
     Column(modifier) {
         Box {
-            Artwork(card.artwork, Modifier.fillMaxWidth().aspectRatio(1f).clickable(enabled = card.navigable && !preparing) { if (card.continuation != null) model.playCard(card) else model.open(card) })
+            Artwork(card.artworkImage, Modifier.fillMaxWidth().aspectRatio(1f).clickable(enabled = canOpen) { if (card.continuation != null) model.playCard(card) else model.open(card) }, homeArtworkViewport)
             if (failure != null) Text(failure.resolve(), Modifier.align(Alignment.BottomStart).fillMaxWidth()
                 .background(MaterialTheme.colorScheme.errorContainer).padding(start = 8.dp, end = 56.dp, top = 8.dp, bottom = 8.dp)
                 .testTag("card-error-${card.playbackKey}"), color = MaterialTheme.colorScheme.onErrorContainer,
                 style = MaterialTheme.typography.labelSmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
-            if (card.playable) FilledIconButton(onClick = { model.playCard(card) }, enabled = !preparing,
+            if (card.playable) FilledIconButton(onClick = { model.playCard(card) }, enabled = enabled && !preparing,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).testTag("card-play-${card.playbackKey}")) {
                 if (preparing) CircularProgressIndicator(Modifier.size(22.dp).testTag("card-preparing-${card.playbackKey}"), strokeWidth = 2.dp)
                 else if (failure != null) Icon(Icons.Default.Refresh, stringResource(R.string.native_retry))
                 else Icon(Icons.Default.PlayArrow, stringResource(R.string.native_play_card, card.titleText?.resolve() ?: card.title))
             }
         }
-        Text(card.titleText?.resolve() ?: card.title, Modifier.fillMaxWidth().clickable(enabled = card.navigable && !preparing) { if (card.continuation != null) model.playCard(card) else model.open(card) }.padding(top = 8.dp),
+        Text(card.titleText?.resolve() ?: card.title, Modifier.fillMaxWidth().clickable(enabled = canOpen) { if (card.continuation != null) model.playCard(card) else model.open(card) }.padding(top = 8.dp),
             maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
         Text(card.subtitleText?.resolve() ?: card.subtitle, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }

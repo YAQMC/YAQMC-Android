@@ -2,12 +2,14 @@ package org.yaqmc.android.nativeui
 
 import android.app.Activity
 import android.util.Base64
+import android.view.View
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
@@ -28,8 +30,10 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -47,12 +51,15 @@ import androidx.media3.common.util.UnstableApi
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import org.yaqmc.android.AndroidStartupDiagnostics
 import org.yaqmc.android.R
 
 @OptIn(ExperimentalMaterial3Api::class)
 @UnstableApi
 @Composable
-internal fun NativeApp(model: NativeViewModel, login: (String) -> Unit, share: (Track, SongShareKind) -> Unit, reportDrawn: () -> Unit) {
+internal fun NativeApp(model: NativeViewModel, login: (String) -> Unit, share: (Track, SongShareKind) -> Unit, reportDrawn: () -> Unit,
+    startupDiagnostics: AndroidStartupDiagnostics? = null,
+) {
     val preferences by model.preferences.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
@@ -63,14 +70,16 @@ internal fun NativeApp(model: NativeViewModel, login: (String) -> Unit, share: (
     CompositionLocalProvider(LocalNativeContext provides localized, LocalContext provides localized, LocalConfiguration provides localized.resources.configuration,
         LocalActivityResultRegistryOwner provides activityResults,
         LocalDensity provides Density(density.density, density.fontScale * preferences.appearance.fontScale / 100f)) {
-        NativeShell(model, login, share, reportDrawn)
+        NativeShell(model, login, share, reportDrawn, startupDiagnostics)
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @UnstableApi
 @Composable
-private fun NativeShell(model: NativeViewModel, login: (String) -> Unit, share: (Track, SongShareKind) -> Unit, reportDrawn: () -> Unit) {
+private fun NativeShell(model: NativeViewModel, login: (String) -> Unit, share: (Track, SongShareKind) -> Unit, reportDrawn: () -> Unit,
+    startupDiagnostics: AndroidStartupDiagnostics?,
+) {
     val preferences by model.preferences.collectAsStateWithLifecycle()
     val account by model.account.collectAsStateWithLifecycle()
     val route by model.route.collectAsStateWithLifecycle()
@@ -86,6 +95,15 @@ private fun NativeShell(model: NativeViewModel, login: (String) -> Unit, share: 
     val systemDark = isSystemInDarkTheme()
     val dark = preferences.isDark(systemDark)
     val view = LocalView.current
+    val routeTransition = updateTransition(route, label = "player-transition")
+    val homeArtworkViewport = remember(route, view, startupDiagnostics) {
+        startupDiagnostics?.takeIf { route.kind == "home" && !it.homeArtworkDrawn }?.let { diagnostics ->
+            HomeArtworkViewport(diagnostics) {
+                model.route.value == route && routeTransition.currentState == route && !routeTransition.isRunning &&
+                    view.isShown && view.windowVisibility == View.VISIBLE
+            }
+        }
+    }
     val window = (view.context as? Activity)?.window
     SideEffect {
         if (window != null) WindowCompat.getInsetsController(window, view).apply {
@@ -110,8 +128,8 @@ private fun NativeShell(model: NativeViewModel, login: (String) -> Unit, share: 
         LaunchedEffect(pluginNotice?.optLong("id")) { pluginNotice?.text("message")?.takeIf(String::isNotBlank)?.let { snack.showSnackbar(it) } }
         Box(Modifier.fillMaxSize()) {
         NativeBackdrop(preferences.appearance, artwork, Modifier.matchParentSize())
-        AnimatedContent(targetState = route, modifier = Modifier.fillMaxSize(),
-            contentKey = { it.kind == "player" }, label = "player-transition",
+        routeTransition.AnimatedContent(modifier = Modifier.fillMaxSize(),
+            contentKey = { it.kind == "player" },
             transitionSpec = {
                 (when {
                     targetState.kind == "player" -> slideInVertically(tween(320)) { it } togetherWith ExitTransition.KeepUntilTransitionsFinished
@@ -196,7 +214,8 @@ private fun NativeShell(model: NativeViewModel, login: (String) -> Unit, share: 
                             preferences.theme, model::setTheme)
                         "player" -> NowPlaying(model, openShare, playerPager, playerPresetLayout, { playerPresetLayout = it })
                         "queue" -> Queue(model, openShare)
-                        else -> Catalog(model, destination, openShare, reportDrawn)
+                        else -> Catalog(model, destination, openShare, reportDrawn,
+                            homeArtworkViewport = homeArtworkViewport?.takeIf { destination == route })
                     }
                     }
                 }
@@ -230,18 +249,29 @@ private fun NavIcon(kind: String, label: String) = Icon(when (kind) {
 }, label)
 
 @Composable
-internal fun Artwork(source: Any?, modifier: Modifier = Modifier) {
+internal fun Artwork(source: Any?, modifier: Modifier = Modifier, homeArtworkViewport: HomeArtworkViewport? = null) {
     Box(modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
         Text("♫", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
-        AsyncImage(model = source, contentDescription = null, modifier = Modifier.matchParentSize(), contentScale = ContentScale.Crop)
+        val timing = if (homeArtworkViewport != null && source != null) remember(homeArtworkViewport, source) {
+            homeArtworkViewport.takeUnless { it.complete }?.let(::HomeArtworkDraw)
+        } else null
+        if (timing == null) {
+            AsyncImage(model = source, contentDescription = null, modifier = Modifier.matchParentSize(), contentScale = ContentScale.Crop)
+        } else key(timing) {
+            // Coil's load callbacks and Compose's actual draw share this one image node.
+            AsyncImage(model = source, contentDescription = null, contentScale = ContentScale.Crop,
+                modifier = Modifier.matchParentSize().onGloballyPositioned(timing::positioned)
+                    .drawWithContent { drawContent(); timing.drawn() },
+                onLoading = { timing.loading() }, onSuccess = { timing.success(it.result.dataSource) }, onError = { timing.failed() })
+        }
     }
 }
 
 @UnstableApi
 @Composable
-internal fun TrackRow(track: Track, model: NativeViewModel, share: (Track) -> Unit, play: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = play).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Artwork(track.artwork, Modifier.size(48.dp))
+internal fun TrackRow(track: Track, model: NativeViewModel, share: (Track) -> Unit, homeArtworkViewport: HomeArtworkViewport? = null, enabled: Boolean = true, play: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(enabled = enabled, onClick = play).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Artwork(track.artworkImage, Modifier.size(48.dp), homeArtworkViewport)
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(track.title.ifBlank { stringResource(R.string.native_unknown_song) }, maxLines = 1, overflow = TextOverflow.Ellipsis)
             NativePluginSongBadges(model, track)
@@ -250,7 +280,7 @@ internal fun TrackRow(track: Track, model: NativeViewModel, share: (Track) -> Un
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Text(formatTime(track.duration), style = MaterialTheme.typography.labelSmall)
-        TrackMenu(track, model, share)
+        if (enabled) TrackMenu(track, model, share)
     }
 }
 

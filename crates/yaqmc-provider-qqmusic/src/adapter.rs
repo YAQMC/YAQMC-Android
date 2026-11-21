@@ -314,6 +314,10 @@ impl api::ProviderAccount for QQMusicService {
         map_output(value)
     }
 
+    fn begin_startup_restore(&self) {
+        QQMusicService::begin_startup_restore(self);
+    }
+
     async fn restore_session(&self) {
         QQMusicService::restore_session(self).await;
     }
@@ -430,6 +434,35 @@ impl api::MusicProvider for QQMusicService {
 
     async fn home(&self, refresh: bool) -> api::ProviderResult<api::HomeFeed> {
         let value = QQMusicService::home(self, refresh)
+            .await
+            .map_err(provider_error)?;
+        map_output(value)
+    }
+
+    async fn home_cached(&self, wait_for_account: bool) -> api::ProviderResult<api::HomeCacheRead> {
+        let result = self
+            .cached_home_snapshot(wait_for_account)
+            .await
+            .map_err(provider_error)?;
+        let snapshot = result
+            .feed
+            .map(|(feed, stale)| {
+                Ok(api::CachedHomeFeed {
+                    feed: map_output(feed)?,
+                    stale,
+                })
+            })
+            .transpose()?;
+        Ok(api::HomeCacheRead {
+            snapshot,
+            awaiting_account: result.awaiting_account,
+            refresh_required: result.refresh_required,
+        })
+    }
+
+    async fn home_fresh(&self, refresh: bool) -> api::ProviderResult<api::HomeFeed> {
+        let value = self
+            .load_home(refresh, false)
             .await
             .map_err(provider_error)?;
         map_output(value)

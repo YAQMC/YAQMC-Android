@@ -148,6 +148,19 @@
       "main"
     ],
     "mainWindowOnly": true,
+    "name": "provider_home_cached",
+    "owner": "core",
+    "requestCap": 1048576,
+    "responseCap": 1048576,
+    "timeoutClass": "standard",
+    "timeoutMs": 30000
+  },
+  {
+    "allowedOrigins": [
+      "host",
+      "main"
+    ],
+    "mainWindowOnly": true,
     "name": "provider_discover",
     "owner": "core",
     "requestCap": 1048576,

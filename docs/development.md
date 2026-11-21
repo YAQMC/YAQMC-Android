@@ -216,7 +216,11 @@ GitHub Release 的附件只放 APK。安装包和构建记录保存在 `release-
 7. **同步网站下载。** 正式版发布后，按下文的[网站下载更新](#网站下载更新)同步同一 APK 与版本信息；网站下载入口只同步正式版。
 8. **交接。** 向用户交付版本、GitHub Release 链接及本机材料位置；正式版另提供网站下载页和永久下载链接，并说明下载检查事项。发布后的检查由用户手动完成。
 
-应用内更新与反馈指向本仓库。稳定版默认不订阅预览；预览版可接收同通道更新及后续正式版，规则见 [AndroidUpdateChecker](../apps/android/nativeApp/src/main/java/org/yaqmc/android/update/AndroidUpdateChecker.kt)。
+应用内更新使用本仓库的 Releases。稳定版默认不订阅预览，预览版可接收同通道更新及后续正式版。[AndroidUpdateChecker](../apps/android/nativeApp/src/main/java/org/yaqmc/android/update/AndroidUpdateChecker.kt)
+
+设置中的“诊断与反馈”支持切换当前日志级别、分享或提交诊断包和预览问题报告。用户确认提交后，应用将 Core 导出的脱敏 ZIP 发送到下载站，并展示服务器返回的反馈编号。用户也可以从网站上传已有 ZIP、提交文字报告，或使用 GitHub Issues。[免登录反馈](https://ltzu.top/yaqmc/feedback)
+
+分析首页封面时，查看 ZIP 内 `host.json` 的 `startup.firstVisibleHomeArtwork`。其中 `requestStartedMs` 和 `displayedMs` 以应用启动诊断的同一单调时钟为起点，分别对应首张实际可见封面的 Coil 请求和首次绘制。`dataSource` 标明图片来自网络、磁盘或内存。导出时若只观察到可见请求，记录中只有请求起点。
 
 ### 网站下载更新
 

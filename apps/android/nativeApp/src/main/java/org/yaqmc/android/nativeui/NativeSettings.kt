@@ -17,13 +17,20 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.util.UnstableApi
 import org.yaqmc.android.R
 
 @UnstableApi
 @Composable
 internal fun Settings(model: NativeViewModel) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(model, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { model.loadSettingsQuality() }
+    }
     val preferences by model.preferences.collectAsStateWithLifecycle()
     val quality by model.quality.collectAsStateWithLifecycle()
     val qualityBusy by model.qualityBusy.collectAsStateWithLifecycle()

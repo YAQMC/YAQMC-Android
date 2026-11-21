@@ -10,7 +10,7 @@ import org.json.JSONObject
 import org.yaqmc.android.core.CoreManager
 import org.yaqmc.android.media.PlaybackService
 
-internal class CoreFailure(val code: String, message: String) : Exception(message)
+internal class CoreFailure(val code: String, message: String, val retryable: Boolean = false) : Exception(message)
 
 /** A request deadline is a recoverable failure; parent cancellation still cancels navigation. */
 internal suspend fun <T> withCoreDeadline(timeoutMs: Long = 30_000, block: suspend () -> T): T {
@@ -22,7 +22,7 @@ internal fun decodeEnvelope(json: String): Any? {
     val envelope = JSONObject(json)
     if (!envelope.optBoolean("ok")) {
         val error = envelope.optJSONObject("error")
-        throw CoreFailure(error?.text("code") ?: "core.protocol", error?.text("message").orEmpty())
+        throw CoreFailure(error?.text("code") ?: "core.protocol", error?.text("message").orEmpty(), error?.optBoolean("retryable") == true)
     }
     return envelope.opt("result").takeUnless { it === JSONObject.NULL }
 }
@@ -36,7 +36,11 @@ internal interface NativeCoreApi {
 @UnstableApi
 internal class NativeCore(private val context: Context) : NativeCoreApi {
     override suspend fun invoke(method: String, params: JSONObject, host: Boolean): Any? = withCoreDeadline(
-        if (method in setOf("plugin_install", "plugin_install_unpacked", "plugin_store_search", "plugin_store_releases")) 120_000 else 30_000,
+        when {
+            method == "provider_home_cached" && params.optBoolean("waitForAccount") -> 120_000
+            method in setOf("plugin_install", "plugin_install_unpacked", "plugin_store_search", "plugin_store_releases") -> 120_000
+            else -> 30_000
+        },
     ) {
         val playbackMethod = if (method == "plugin_bridge") when (params.optJSONObject("request")?.text("method")) {
             "player.play" -> "player_play"; "player.pause" -> "player_pause"; "player.toggle" -> "player_toggle"

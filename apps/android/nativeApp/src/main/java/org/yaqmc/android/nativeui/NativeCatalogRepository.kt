@@ -5,8 +5,23 @@ import kotlinx.coroutines.ensureActive
 import org.json.JSONObject
 import org.yaqmc.android.R
 
-/** Uses the same provider methods as the old Android client, with no duplicate business cache. */
+internal data class CachedHome(val page: CatalogPage, val stale: Boolean)
+internal data class HomeCacheRead(
+    val snapshot: CachedHome?,
+    val awaitingAccount: Boolean,
+    val refreshRequired: Boolean,
+)
+
+/** Projects Core catalog responses without a separate data cache. */
 internal class NativeCatalogRepository(private val request: suspend (String, JSONObject) -> JSONObject) {
+    suspend fun cachedHome(target: NativeRoute, waitForAccount: Boolean = false): HomeCacheRead {
+        val value = request("provider_home_cached", target.providerParams().put("waitForAccount", waitForAccount))
+        val cached = value.optJSONObject("snapshot")?.let { snapshot ->
+            snapshot.optJSONObject("feed")?.let { CachedHome(homePage(target, it).scopedTo(target), snapshot.optBoolean("stale")) }
+        }
+        return HomeCacheRead(cached, value.optBoolean("awaitingAccount"), value.optBoolean("refreshRequired"))
+    }
+
     suspend fun playbackTracks(target: NativeRoute, authRevision: Long? = null): List<Track> {
         val tracks = linkedMapOf<String, Track>()
         val cursors = mutableSetOf<String>()
@@ -28,14 +43,12 @@ internal class NativeCatalogRepository(private val request: suspend (String, JSO
     }
 
     suspend fun load(target: NativeRoute, refresh: Boolean, number: Int, cursor: String?): CatalogPage {
-        fun provider() = JSONObject().put("providerId", target.providerId).put("profileId", target.profileId)
+        fun provider() = target.providerParams()
         val page = when (target.kind) {
-            "home" -> NativeModels.home(request("provider_home", provider().put("refresh", refresh)))
+            "home" -> homePage(target, request("provider_home", provider().put("refresh", refresh).put("requireFresh", true)))
             "discover" -> NativeModels.discover(request("provider_discover", provider().put("refresh", refresh)))
             "search" -> if (target.query.isBlank()) {
-                val home = request("provider_home", provider().put("refresh", refresh))
-                CatalogPage(titleFor("search"), NativeText(R.string.native_search_hint), sections = listOf(
-                    FeedSection(NativeText(R.string.native_recommended_playlists), NativeModels.cards(home.optJSONArray("madeForYou"), "playlist"))))
+                homePage(target, request("provider_home", provider().put("refresh", refresh)))
             } else {
                 val value = request("provider_search", provider().put("query", target.query).put("kind", target.searchKind).put("page", number).put("limit", 30))
                 val section = if (target.searchKind == "song") FeedSection(titleFor("song"), tracks = NativeModels.tracks(value.optJSONArray("items")))
@@ -84,9 +97,19 @@ internal class NativeCatalogRepository(private val request: suspend (String, JSO
             }
             else -> NativeModels.detail(target.kind, request("provider_${target.kind}", provider().put(if (target.kind == "area") "encArea" else "id", target.id)))
         }
-        return page.copy(
-            sections = page.sections.map { section -> section.copy(cards = section.cards.map { it.copy(providerId = target.providerId, profileId = target.profileId) }) },
-            links = page.links.map { it.copy(providerId = target.providerId, profileId = target.profileId) },
-        )
+        return page.scopedTo(target)
     }
+
+    private fun NativeRoute.providerParams() = JSONObject().put("providerId", providerId).put("profileId", profileId)
+
+    private fun homePage(target: NativeRoute, feed: JSONObject): CatalogPage {
+        if (target.kind == "home") return NativeModels.home(feed)
+        return CatalogPage(titleFor("search"), NativeText(R.string.native_search_hint), sections = listOf(
+            FeedSection(NativeText(R.string.native_recommended_playlists), NativeModels.cards(feed.optJSONArray("madeForYou"), "playlist"))))
+    }
+
+    private fun CatalogPage.scopedTo(target: NativeRoute) = copy(
+        sections = sections.map { section -> section.copy(cards = section.cards.map { it.copy(providerId = target.providerId, profileId = target.profileId) }) },
+        links = links.map { it.copy(providerId = target.providerId, profileId = target.profileId) },
+    )
 }

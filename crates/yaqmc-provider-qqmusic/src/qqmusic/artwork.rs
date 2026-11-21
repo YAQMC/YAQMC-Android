@@ -33,16 +33,20 @@ pub(super) fn artwork_from_provider_url(
         };
     };
 
-    let variants = canonical_album_mid(&source)
+    let album_sizes = canonical_album_mid(&source)
         .filter(|mid| is_safe_album_mid(mid))
-        .map(|mid| album_variants(&mid))
-        .or_else(|| measured_source_variant(&source).map(|variant| vec![variant]))
-        .unwrap_or_default();
+        .map(|mid| album_variants(&mid));
+    let (src, variants) = match album_sizes {
+        Some(variants) => (variants[1].src.clone(), variants),
+        None => {
+            let variants = playlist_cover_variants(&source)
+                .or_else(|| measured_source_variant(&source).map(|variant| vec![variant]))
+                .unwrap_or_default();
+            (source, variants)
+        }
+    };
     Artwork {
-        src: variants
-            .get(1)
-            .map(|variant| variant.src.clone())
-            .unwrap_or(source),
+        src,
         alt: format!("Cover for {}", clean_text(title)),
         dominant_color,
         variants,
@@ -139,16 +143,55 @@ fn fallback_artwork(title: &str, color_key: &str) -> Artwork {
 }
 
 fn album_variants(mid: &str) -> Vec<ArtworkVariant> {
-    VERIFIED_ALBUM_SIZES
-        .into_iter()
-        .map(|size| ArtworkVariant {
-            src: format!(
-                "https://y.gtimg.cn/music/photo_new/T002R{size}x{size}M000{mid}.jpg?max_age=2592000"
-            ),
+    square_variants(&VERIFIED_ALBUM_SIZES, |size| {
+        format!(
+            "https://y.gtimg.cn/music/photo_new/T002R{size}x{size}M000{mid}.jpg?max_age=2592000"
+        )
+    })
+}
+
+fn square_variants(sizes: &[u32], source_for_size: impl Fn(u32) -> String) -> Vec<ArtworkVariant> {
+    sizes
+        .iter()
+        .map(|&size| ArtworkVariant {
+            src: source_for_size(size),
             width: size,
             height: size,
         })
         .collect()
+}
+
+fn playlist_cover_variants(source: &str) -> Option<Vec<ArtworkVariant>> {
+    let url = reqwest::Url::parse(source).ok()?;
+    if url.fragment().is_some() {
+        return None;
+    }
+    let path = url.path();
+    let mut variants = match (url.host_str(), url.query()) {
+        (Some("qpic.y.qq.com"), Some("n=1")) => {
+            let key = path.strip_prefix("/music_cover/")?.strip_suffix("/600")?;
+            if key.is_empty() || !key.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+                return None;
+            }
+            square_variants(&[150, 300], |size| {
+                format!("https://qpic.y.qq.com/music_cover/{key}/{size}?n=1")
+            })
+        }
+        (Some("music-file.y.qq.com"), Some("imageView2/4/w/600/h/600"))
+            if path.starts_with("/songlist/u/") && path.ends_with(".jpg") =>
+        {
+            square_variants(&[150, 300, 500], |size| {
+                format!("https://music-file.y.qq.com{path}?imageView2/4/w/{size}/h/{size}")
+            })
+        }
+        _ => return None,
+    };
+    variants.push(ArtworkVariant {
+        src: source.to_owned(),
+        width: 600,
+        height: 600,
+    });
+    Some(variants)
 }
 
 fn is_safe_album_mid(mid: &str) -> bool {
@@ -234,6 +277,45 @@ mod tests {
         assert!(suffixed.variants[3]
             .src
             .contains("T002R800x800M000003eNAcG12WfIs.jpg"));
+    }
+
+    #[test]
+    fn provider_qpic_playlist_url_exposes_verified_smaller_sizes() {
+        let base = "https://qpic.y.qq.com/music_cover/bdnWSryb0bvqP74ia8DEuocHUleojqEnKxaU7ibWyfbAsib20Th4mZ3Jg";
+        let original = format!("{base}/600?n=1");
+        let artwork = artwork_from_provider_url(&original, "Playlist", "#102030".to_owned());
+
+        assert_eq!(artwork.src, original);
+        assert_eq!(
+            artwork.variants,
+            [150, 300, 600].map(|size| ArtworkVariant {
+                src: format!("{base}/{size}?n=1"),
+                width: size,
+                height: size,
+            })
+        );
+    }
+
+    #[test]
+    fn provider_songlist_url_exposes_verified_smaller_matching_crops() {
+        let base = "https://music-file.y.qq.com/songlist/u/7KnsNeE5NeSF/20126/f572f48f71c0e131b1b1e4ba9d3096b96a48cc4c_1abd87.jpg";
+        let original = format!("{base}?imageView2/4/w/600/h/600");
+        let artwork = artwork_from_provider_url(&original, "Playlist", "#102030".to_owned());
+
+        assert_eq!(artwork.src, original);
+        assert_eq!(
+            artwork.variants,
+            [150, 300, 500, 600].map(|size| ArtworkVariant {
+                src: format!("{base}?imageView2/4/w/{size}/h/{size}"),
+                width: size,
+                height: size,
+            })
+        );
+
+        let different_query = format!("{original}&token=fixture");
+        let artwork = artwork_from_provider_url(&different_query, "Playlist", "#102030".to_owned());
+        assert_eq!(artwork.src, different_query);
+        assert!(artwork.variants.is_empty());
     }
 
     #[test]

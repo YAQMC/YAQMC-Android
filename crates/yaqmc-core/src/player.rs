@@ -12,6 +12,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -629,32 +630,41 @@ impl PlayerService {
         snapshot
     }
 
-    pub async fn restore(&self, snapshot: PlayerSnapshot) -> PlayerSnapshot {
+    pub async fn restore(&self, mut snapshot: PlayerSnapshot) -> PlayerSnapshot {
         let restored = {
             let mut core = self.core.write().await;
-            if snapshot.queue_entries.len() == snapshot.queue.len()
+            let mut entry_ids = HashSet::new();
+            let entries_match_queue = snapshot.queue_entries.len() == snapshot.queue.len()
                 && snapshot
                     .queue_entries
                     .iter()
                     .zip(&snapshot.queue)
-                    .all(|(entry, track)| entry.track == *track)
-            {
-                core.queue = snapshot
+                    .all(|(entry, track)| {
+                        entry.track == *track
+                            && !entry.id.trim().is_empty()
+                            && entry_ids.insert(entry.id.as_str())
+                    });
+            core.queue = snapshot.queue;
+            core.queue_entry_ids = if entries_match_queue {
+                snapshot
+                    .shuffle_traversal
+                    .retain(|id| entry_ids.contains(id.as_str()));
+                snapshot
+                    .playback_history
+                    .retain(|id| entry_ids.contains(id.as_str()));
+                snapshot
                     .queue_entries
-                    .iter()
-                    .map(|entry| entry.track.clone())
-                    .collect();
-                core.queue_entry_ids = snapshot
-                    .queue_entries
-                    .iter()
-                    .map(|entry| entry.id.clone())
-                    .collect();
+                    .into_iter()
+                    .map(|entry| entry.id)
+                    .collect()
             } else {
-                core.queue = snapshot.queue;
-                core.queue_entry_ids = (0..core.queue.len())
+                snapshot.current_queue_entry_id = None;
+                snapshot.shuffle_traversal.clear();
+                snapshot.playback_history.clear();
+                (0..core.queue.len())
                     .map(|_| new_queue_entry_id())
-                    .collect();
-            }
+                    .collect()
+            };
             core.current_index = snapshot
                 .current_queue_entry_id
                 .as_deref()
@@ -672,18 +682,12 @@ impl PlayerService {
             } else {
                 snapshot.playback_order
             };
-            core.shuffle_traversal = snapshot
-                .shuffle_traversal
-                .into_iter()
-                .filter(|id| core.queue_entry_ids.contains(id))
-                .collect();
+            core.shuffle_traversal = snapshot.shuffle_traversal;
             core.shuffle_cursor = snapshot.shuffle_cursor;
-            core.playback_history = snapshot
-                .playback_history
-                .into_iter()
-                .filter(|id| core.queue_entry_ids.contains(id))
-                .collect();
-            core.history_cursor = snapshot.history_cursor;
+            core.playback_history = snapshot.playback_history;
+            core.history_cursor = snapshot
+                .history_cursor
+                .min(core.playback_history.len().saturating_sub(1));
             if core.playback_order == PlaybackOrder::Shuffle
                 && (core.shuffle_traversal.len() != core.queue.len()
                     || core.shuffle_cursor >= core.shuffle_traversal.len())
@@ -1291,8 +1295,11 @@ impl PlayerService {
                     current.min(core.queue.len() - 1)
                 });
             }
-            let reload =
-                removed_current.then_some((core.current_index.expect("non-empty queue"), autoplay));
+            let reload = if removed_current {
+                core.current_index.map(|next_index| (next_index, autoplay))
+            } else {
+                None
+            };
             core.queue_materially_changed();
             (
                 core.snapshot(),
@@ -3785,6 +3792,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removing_the_last_queue_entry_leaves_an_idle_empty_queue() {
+        let player = PlayerService::new();
+        let added = player.add_to_queue(song("one", 10_000)).await;
+
+        let empty = player
+            .remove_queue_entry(&added.queue_entries[0].id)
+            .await
+            .expect("the last entry can be removed");
+
+        assert!(empty.queue.is_empty());
+        assert!(empty.queue_entries.is_empty());
+        assert_eq!(empty.current_index, None);
+        assert_eq!(empty.playback_state, PlaybackState::Idle);
+    }
+
+    #[tokio::test]
     async fn queue_entries_are_unique_for_duplicates_and_reorder_preserves_active_playback() {
         let engine = Arc::new(crate::audio::TestAudioEngine::default());
         let player = PlayerService::with_runtime(
@@ -4122,6 +4145,46 @@ mod tests {
         assert_eq!(restored.history_cursor, persisted.history_cursor);
         assert_eq!(restored.position_ms, 2_300);
         assert_eq!(restored.playback_state, PlaybackState::Paused);
+    }
+
+    #[tokio::test]
+    async fn restore_repairs_invalid_queue_ids_and_retains_tracks_and_selection() {
+        let root = tempfile::tempdir().expect("temporary queue storage");
+        let storage = crate::storage::StorageService::open(
+            root.path().join("data"),
+            root.path().join("cache"),
+        )
+        .expect("open queue storage");
+        let source = PlayerService::new();
+        let duplicate = song("repeat", 10_000);
+        let mut persisted = source
+            .add_tracks_to_queue(vec![duplicate.clone(), duplicate, song("other", 10_000)])
+            .await;
+        persisted.current_index = Some(1);
+        persisted.position_ms = 2_300;
+
+        for invalid_id in [persisted.queue_entries[0].id.clone(), "  ".to_owned()] {
+            persisted.queue_entries[1].id = invalid_id.clone();
+            persisted.current_queue_entry_id = Some(invalid_id);
+            storage.save_queue(&persisted).expect("persist queue");
+            let loaded = storage
+                .load_queue()
+                .expect("load queue")
+                .expect("persisted queue exists");
+
+            let restored = PlayerService::new().restore(loaded).await;
+
+            assert_eq!(restored.queue, persisted.queue);
+            assert_eq!(restored.current_index, Some(1));
+            assert_eq!(restored.position_ms, 2_300);
+            assert_eq!(restored.playback_state, PlaybackState::Paused);
+            assert_ne!(restored.queue_entries[0].id, restored.queue_entries[1].id);
+            assert!(!restored.queue_entries[1].id.trim().is_empty());
+            assert_eq!(
+                restored.current_queue_entry_id.as_ref(),
+                Some(&restored.queue_entries[1].id)
+            );
+        }
     }
 
     #[tokio::test]

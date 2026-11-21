@@ -5,10 +5,10 @@ use crate::{
     Album, AreaFeed, Artist, ArtistCatalogKind, ArtistCatalogPage, AudioQualityPreference,
     CacheStats, CatalogProviderCapabilities, CatalogSearchKind, CollectPlaylistRequest,
     CreatePlaylistRequest, DeletePlaylistRequest, DiscoverFeed, FavoriteMutationRequest,
-    FavoriteMutationResult, HomeFeed, LibrarySnapshot, LyricDocument, OAuthLoginProvider,
-    OAuthPrepareResult, Page, PlaybackSourceResolver, Playlist, PlaylistMutationResult,
-    PlaylistTrackMutationRequest, ProviderResult, ProviderStatus, RemotePlayHistoryItem,
-    RenamePlaylistRequest, SearchResult, ShareTarget, Song,
+    FavoriteMutationResult, HomeCacheRead, HomeFeed, LibrarySnapshot, LyricDocument,
+    OAuthLoginProvider, OAuthPrepareResult, Page, PlaybackSourceResolver, Playlist,
+    PlaylistMutationResult, PlaylistTrackMutationRequest, ProviderResult, ProviderStatus,
+    RemotePlayHistoryItem, RenamePlaylistRequest, SearchResult, ShareTarget, Song,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -144,6 +144,7 @@ pub trait ProviderAccount: Send + Sync {
     async fn cancel_qr_login(&self, attempt_id: String) -> ProviderResult<AccountSnapshot>;
     async fn refresh_qr_login(&self, attempt_id: Option<String>)
         -> ProviderResult<AccountSnapshot>;
+    fn begin_startup_restore(&self) {}
     async fn restore_session(&self);
     async fn sign_out(&self) -> ProviderResult<AccountSnapshot>;
 }
@@ -176,6 +177,12 @@ pub trait CatalogProvider: Send + Sync {
     ) -> ProviderResult<ArtistCatalogPage>;
     async fn catalog_playlist(&self, id: String) -> ProviderResult<Playlist>;
     async fn catalog_home(&self, refresh: bool) -> ProviderResult<HomeFeed>;
+    async fn catalog_home_cached(&self, _wait_for_account: bool) -> ProviderResult<HomeCacheRead> {
+        Ok(HomeCacheRead::default())
+    }
+    async fn catalog_home_fresh(&self, refresh: bool) -> ProviderResult<HomeFeed> {
+        self.catalog_home(refresh).await
+    }
     async fn catalog_discover(&self, refresh: bool) -> ProviderResult<DiscoverFeed>;
     async fn catalog_area(&self, enc_area: String) -> ProviderResult<AreaFeed>;
     fn catalog_library(&self) -> LibrarySnapshot;
@@ -281,6 +288,12 @@ pub trait MusicProvider: PlaybackSourceResolver + ProviderAccount + Send + Sync 
     ) -> ProviderResult<ArtistCatalogPage>;
     async fn playlist(&self, id: String) -> ProviderResult<Playlist>;
     async fn home(&self, refresh: bool) -> ProviderResult<HomeFeed>;
+    async fn home_cached(&self, _wait_for_account: bool) -> ProviderResult<HomeCacheRead> {
+        Ok(HomeCacheRead::default())
+    }
+    async fn home_fresh(&self, refresh: bool) -> ProviderResult<HomeFeed> {
+        self.home(refresh).await
+    }
     async fn discover(&self, refresh: bool) -> ProviderResult<DiscoverFeed>;
     async fn area(&self, enc_area: String) -> ProviderResult<AreaFeed>;
     fn library(&self) -> LibrarySnapshot;

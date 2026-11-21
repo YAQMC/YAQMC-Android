@@ -142,6 +142,362 @@ class NativeCatalogStateTest {
         }
     }
 
+    @Test fun foregroundSyncFailuresDoNotInterruptHomeOrShowAnActionError() = runBlocking {
+        val signedIn = java.util.concurrent.atomic.AtomicBoolean(false)
+        val fake = FakeCore { method, _ -> when (method) {
+            "player_snapshot", "provider_account_refresh", "continuation_snapshot" -> throw CoreFailure("core.protocol", "private fixture detail")
+            "provider_account_snapshot" -> if (signedIn.get()) authenticated() else JSONObject()
+            "provider_home" -> {
+                val id = if (signedIn.get()) "account-home" else "guest-home"
+                JSONObject("""{"madeForYou":[{"id":"$id"}]}""")
+            }
+            else -> JSONObject()
+        } }
+        withModel(fake) { model ->
+            signedIn.set(true)
+            repeat(2) {
+                main { model.observe() }
+                await { model.page.value.page.sections.firstOrNull()?.cards?.firstOrNull()?.id == "account-home" }
+                await { fake.calls.count { it.first == "continuation_snapshot" } == it + 1 }
+                main {
+                    assertNull(model.message.value)
+                    assertNull(model.page.value.error)
+                    model.stopObserving()
+                }
+            }
+            assertTrue(fake.calls.any { it.first == "provider_account_refresh" })
+            assertEquals(2, fake.calls.count { it.first == "provider_home" })
+            val logs = fake.calls.filter { it.first == "diagnostics_log_frontend" }
+                .flatMap { it.second.optJSONArray("entries").objects() }
+            assertTrue(logs.any { it.text("message") == "player_snapshot · core.protocol" })
+            assertTrue(logs.all { it.text("target") == "android.sync" && !it.text("message").contains("private fixture detail") })
+        }
+    }
+
+    @Test fun automaticHomeLoadKeepsLoadingUntilTheRetrySucceeds() = runBlocking {
+        val retryStarted = CompletableDeferred<Unit>()
+        val releaseRetry = CompletableDeferred<Unit>()
+        var attempts = 0
+        val fake = FakeCore { method, _ -> when (method) {
+            "provider_home" -> {
+                if (++attempts == 1) throw CoreFailure("core.command_error", "", retryable = true)
+                retryStarted.complete(Unit)
+                releaseRetry.await()
+                JSONObject("""{"madeForYou":[{"id":"recovered"}]}""")
+            }
+            else -> JSONObject()
+        } }
+        withModel(fake, waitForHome = false) { model ->
+            withTimeout(5000) { retryStarted.await() }
+            assertTrue(model.page.value.loading)
+            assertNull(model.page.value.error)
+            assertNull(model.message.value)
+            releaseRetry.complete(Unit)
+            await { model.page.value.loaded }
+            assertEquals("recovered", model.page.value.page.sections.single().cards.single().id)
+        }
+    }
+
+    @Test fun repeatedHomeFailureStillOffersManualRetry() = runBlocking {
+        val fake = FakeCore { method, params -> when (method) {
+            "provider_home" -> {
+                if (!params.optBoolean("refresh")) throw CoreFailure("core.command_error", "", retryable = true)
+                JSONObject("""{"madeForYou":[{"id":"recovered"}]}""")
+            }
+            else -> JSONObject()
+        } }
+        withModel(fake, waitForHome = false) { model ->
+            await { model.page.value.error != null }
+            assertFalse(model.page.value.loading)
+            assertEquals(2, fake.calls.count { it.first == "provider_home" })
+            main { model.load(refresh = true) }
+            await { model.page.value.loaded }
+            assertNull(model.page.value.error)
+        }
+    }
+
+    @Test fun staleHomeIsAvailableWhileTheNetworkUpdateIsPending() = runBlocking {
+        val releaseUpdate = CompletableDeferred<Unit>()
+        val fake = FakeCore { method, _ -> when (method) {
+            "provider_home_cached" -> JSONObject("""{"snapshot":{"stale":true,"feed":{"madeForYou":[{"id":"cached"}]}}}""")
+            "provider_home" -> {
+                releaseUpdate.await()
+                JSONObject("""{"madeForYou":[{"id":"updated"}]}""")
+            }
+            else -> JSONObject()
+        } }
+        withModel(fake, waitForHome = false) { model ->
+            await { fake.calls.any { it.first == "provider_home" } && model.page.value.loaded }
+            assertEquals("cached", model.page.value.page.sections.single().cards.single().id)
+            assertFalse(model.page.value.loading)
+            assertNull(model.page.value.error)
+            val cached = fake.calls.single { it.first == "provider_home_cached" }.second
+            assertEquals("qqmusic", cached.getString("providerId"))
+            assertEquals("default", cached.getString("profileId"))
+            val update = fake.calls.single { it.first == "provider_home" }.second
+            assertTrue(update.getBoolean("requireFresh"))
+            assertFalse(update.getBoolean("refresh"))
+            releaseUpdate.complete(Unit)
+            await { model.page.value.page.sections.single().cards.single().id == "updated" }
+        }
+    }
+
+    @Test fun freshHomeCacheSkipsTheUpdateButManualRefreshRetainsItsFailure() = runBlocking {
+        val fake = FakeCore { method, _ -> when (method) {
+            "provider_home_cached" -> JSONObject("""{"snapshot":{"stale":false,"feed":{"madeForYou":[{"id":"cached"}]}}}""")
+            "provider_home" -> throw CoreFailure("core.command_error", "", retryable = true)
+            else -> JSONObject()
+        } }
+        withModel(fake) { model ->
+            assertFalse(fake.calls.any { it.first == "provider_home" })
+            main { model.load(refresh = true) }
+            await { model.page.value.error != null }
+            val refresh = fake.calls.single { it.first == "provider_home" }.second
+            assertTrue(refresh.getBoolean("refresh"))
+            assertTrue(refresh.getBoolean("requireFresh"))
+            assertEquals("cached", model.page.value.page.sections.single().cards.single().id)
+        }
+    }
+
+    @Test fun storedAccountPreviewWaitsBeforeStartingOnePersonalUpdate() = runBlocking {
+        val finishRestore = CompletableDeferred<Unit>()
+        val finishUpdate = CompletableDeferred<Unit>()
+        val fake = FakeCore { method, params -> when (method) {
+            "provider_home_cached" -> {
+                if (params.optBoolean("waitForAccount")) finishRestore.await()
+                homeCache("private-cache", awaiting = !finishRestore.isCompleted, refreshRequired = finishRestore.isCompleted)
+            }
+            "provider_account_snapshot" -> if (finishRestore.isCompleted) authenticated(2) else JSONObject("""{"state":"restoring-session","revision":1}""")
+            "provider_home" -> { check(finishRestore.isCompleted); finishUpdate.await(); homeFeed("personal-update") }
+            else -> JSONObject()
+        } }
+        withModel(fake, waitForHome = false) { model ->
+            main { model.observe() }
+            await { model.page.value.awaitingAccount && model.page.value.loaded && model.account.value.state == "restoring-session" }
+            assertEquals("private-cache", model.page.value.page.sections.single().cards.single().id)
+            assertFalse(fake.calls.any { it.first == "provider_home" })
+            finishRestore.complete(Unit)
+            await { fake.calls.any { it.first == "provider_home" } }
+            main { model.onCoreEvent(1, "account://changed", "{}") }
+            await { model.account.value.authenticated }
+            assertEquals(1, fake.calls.count { it.first == "provider_home" })
+            finishUpdate.complete(Unit)
+            await { model.page.value.page.sections.single().cards.single().id == "personal-update" }
+            assertFalse(model.page.value.awaitingAccount)
+        }
+    }
+
+    @Test fun cancellingHomeAndBlankSearchDoesNotStartGuestRequestsWhileRestoring() = runBlocking {
+        val finishRestore = CompletableDeferred<Unit>()
+        val fake = FakeCore { method, params -> when (method) {
+            "provider_home_cached" -> {
+                if (params.optBoolean("waitForAccount")) finishRestore.await()
+                homeCache(null, awaiting = !finishRestore.isCompleted, refreshRequired = finishRestore.isCompleted)
+            }
+            "provider_home" -> { check(finishRestore.isCompleted); homeFeed("restored") }
+            else -> JSONObject()
+        } }
+        withModel(fake, waitForHome = false) { model ->
+            await { model.page.value.awaitingAccount }
+            main { model.selectRoot("search") }
+            await { fake.calls.count { it.first == "provider_home_cached" && it.second.optBoolean("waitForAccount") } == 2 }
+            assertFalse(fake.calls.any { it.first == "provider_home" })
+            main { model.search("fixture") }
+            await { model.page.value.loaded }
+            finishRestore.complete(Unit)
+            main { assertFalse(fake.calls.any { it.first == "provider_home" }); model.selectRoot("home") }
+            await { model.page.value.page.sections.firstOrNull()?.cards?.firstOrNull()?.id == "restored" }
+            assertEquals(1, fake.calls.count { it.first == "provider_home" })
+        }
+    }
+
+    @Test fun returningToHomeJoinsThePersonalUpdateEvenWithAFreshSnapshot() = runBlocking {
+        val finishUpdate = CompletableDeferred<Unit>()
+        val rebuilds = java.util.concurrent.atomic.AtomicBoolean(false)
+        val fake = FakeCore { method, _ -> when (method) {
+            "provider_home_cached" -> homeCache(
+                if (finishUpdate.isCompleted) "updated" else "old",
+                refreshRequired = !finishUpdate.isCompleted,
+            )
+            "provider_home" -> {
+                rebuilds.compareAndSet(false, true)
+                finishUpdate.await()
+                homeFeed("updated")
+            }
+            else -> JSONObject()
+        } }
+        withModel(fake, waitForHome = false) { model ->
+            await { rebuilds.get() && model.page.value.loaded }
+            main { model.selectRoot("library"); model.selectRoot("home") }
+            await { fake.calls.count { it.first == "provider_home" } == 2 }
+            assertEquals("old", model.page.value.page.sections.single().cards.single().id)
+            finishUpdate.complete(Unit)
+            await { model.page.value.page.sections.single().cards.single().id == "updated" }
+        }
+    }
+
+    @Test fun temporaryRestoreFailureDropsPrivatePreviewAndManualRefreshRetriesAccount() = runBlocking {
+        val finishRestore = CompletableDeferred<Unit>()
+        val recovered = java.util.concurrent.atomic.AtomicBoolean(false)
+        val fake = FakeCore { method, params -> when (method) {
+            "provider_home_cached" -> {
+                if (params.optBoolean("waitForAccount")) finishRestore.await()
+                when {
+                    recovered.get() -> homeCache("verified", refreshRequired = true)
+                    finishRestore.isCompleted -> homeCache("public-cache")
+                    else -> homeCache("private-preview", awaiting = true)
+                }
+            }
+            "provider_account_snapshot" -> if (recovered.get()) authenticated(3) else JSONObject("""{"state":"network-error","revision":2}""")
+            "provider_account_refresh" -> JSONObject().also { recovered.set(true) }
+            "provider_home" -> { check(recovered.get()); homeFeed("verified") }
+            else -> JSONObject()
+        } }
+        withModel(fake, waitForHome = false) { model ->
+            await { model.page.value.awaitingAccount }
+            assertEquals("private-preview", model.page.value.page.sections.single().cards.single().id)
+            finishRestore.complete(Unit)
+            await { !model.page.value.awaitingAccount && model.page.value.loaded }
+            assertEquals("public-cache", model.page.value.page.sections.single().cards.single().id)
+            assertFalse(fake.calls.any { it.first == "provider_home" })
+            main { model.load(refresh = true) }
+            await { model.account.value.authenticated && !model.page.value.loading && model.page.value.loaded }
+            assertEquals(listOf("provider_account_refresh", "provider_home"),
+                fake.calls.map { it.first }.filter { it == "provider_account_refresh" || it == "provider_home" })
+            assertEquals("verified", model.page.value.page.sections.single().cards.single().id)
+        }
+    }
+
+    @Test fun temporaryStartupFailureSchedulesRecoveryAndConfirmedExpiryAllowsGuestHome() = runBlocking {
+        val finishInitialRestore = CompletableDeferred<Unit>()
+        val explicitlyExpired = java.util.concurrent.atomic.AtomicBoolean(false)
+        val fake = FakeCore { method, params -> when (method) {
+            "provider_home_cached" -> {
+                if (params.optBoolean("waitForAccount")) finishInitialRestore.await()
+                homeCache(if (explicitlyExpired.get()) null else "public-cache", awaiting = !finishInitialRestore.isCompleted)
+            }
+            "provider_account_snapshot" -> when {
+                explicitlyExpired.get() -> JSONObject("""{"state":"reauthentication-required","revision":3}""")
+                finishInitialRestore.isCompleted -> JSONObject("""{"state":"network-error","revision":2}""")
+                else -> JSONObject("""{"state":"restoring-session","revision":1}""")
+            }
+            "provider_account_refresh" -> {
+                explicitlyExpired.set(true)
+                throw CoreFailure("core.command_error", "confirm expiry")
+            }
+            "provider_home" -> { check(explicitlyExpired.get()); homeFeed("guest-update") }
+            else -> JSONObject()
+        } }
+        withModel(fake, waitForHome = false) { model ->
+            main { model.observe() }
+            await { model.page.value.awaitingAccount && model.account.value.state == "restoring-session" }
+            finishInitialRestore.complete(Unit)
+            main { model.onCoreEvent(1, "account://changed", "{}") }
+            withTimeout(8000) {
+                while (model.page.value.page.sections.firstOrNull()?.cards?.firstOrNull()?.id != "guest-update") delay(10)
+            }
+            assertEquals("reauthentication-required", model.account.value.state)
+            assertEquals(1, fake.calls.count { it.first == "provider_home" })
+            assertNull(model.message.value)
+        }
+    }
+
+    @Test fun signingInWhileAGuestNetworkRequestIsRunningReplacesTheGuestPage() = runBlocking {
+        val guestStarted = CompletableDeferred<Unit>()
+        val guestCancelled = CompletableDeferred<Unit>()
+        val signedIn = java.util.concurrent.atomic.AtomicBoolean(false)
+        val fake = FakeCore { method, _ -> when (method) {
+            "provider_account_snapshot" -> if (signedIn.get()) authenticated(2) else JSONObject("""{"state":"guest","revision":1}""")
+            "provider_home" -> {
+                if (!signedIn.get()) {
+                    guestStarted.complete(Unit)
+                    try { awaitCancellation() } finally { guestCancelled.complete(Unit) }
+                }
+                homeFeed("signed-in")
+            }
+            else -> JSONObject()
+        } }
+        withModel(fake, waitForHome = false) { model ->
+            withTimeout(5000) { guestStarted.await() }
+            signedIn.set(true)
+            main { model.onCoreEvent(1, "account://changed", "{}") }
+            withTimeout(5000) { guestCancelled.await() }
+            await { model.page.value.loaded }
+            assertEquals("signed-in", model.page.value.page.sections.single().cards.single().id)
+            assertEquals(2, fake.calls.count { it.first == "provider_home" })
+        }
+    }
+
+    @Test fun failedBackgroundHomeUpdateKeepsPreviouslyLoadedRecommendations() = runBlocking {
+        val signedIn = java.util.concurrent.atomic.AtomicBoolean(false)
+        val fake = FakeCore { method, _ -> when (method) {
+            "provider_account_snapshot" -> if (signedIn.get()) authenticated() else JSONObject()
+            "provider_home" -> {
+                if (signedIn.get()) throw CoreFailure("core.protocol", "")
+                JSONObject("""{"madeForYou":[{"id":"guest-home"}]}""")
+            }
+            else -> JSONObject()
+        } }
+        withModel(fake) { model ->
+            signedIn.set(true)
+            main { model.onCoreEvent(1, "account://changed", "{}") }
+            await { fake.calls.count { it.first == "provider_home" } == 2 && !model.page.value.loading }
+            assertEquals("guest-home", model.page.value.page.sections.single().cards.single().id)
+            assertNull(model.page.value.error)
+            assertNull(model.message.value)
+        }
+    }
+
+    @Test fun accountSwitchInvalidatesCachedHomeEvenWhenRevisionsMatch() = runBlocking {
+        val current = java.util.concurrent.atomic.AtomicReference("first")
+        val secondHomeStarted = CompletableDeferred<Unit>()
+        val releaseSecondHome = CompletableDeferred<Unit>()
+        val fake = FakeCore { method, _ -> when (method) {
+            "provider_account_snapshot" -> authenticated().apply { getJSONObject("profile").put("maskedIdentity", current.get()) }
+            "provider_home" -> {
+                if (current.get() == "second") {
+                    secondHomeStarted.complete(Unit)
+                    releaseSecondHome.await()
+                    throw CoreFailure("core.protocol", "")
+                }
+                JSONObject("""{"madeForYou":[{"id":"first-home"}]}""")
+            }
+            else -> JSONObject()
+        } }
+        withModel(fake) { model ->
+            main { model.refreshAccount(); model.load() }
+            await { model.page.value.loaded && fake.calls.count { it.first == "provider_home" } == 2 }
+            current.set("second")
+            main { model.onCoreEvent(1, "account://changed", "{}") }
+            withTimeout(5000) { secondHomeStarted.await() }
+            assertTrue(model.page.value.loading)
+            assertTrue(model.page.value.page.sections.isEmpty())
+            releaseSecondHome.complete(Unit)
+            await { model.page.value.error != null }
+            assertTrue(model.page.value.page.sections.isEmpty())
+        }
+    }
+
+    @Test fun finishingGuestAccountRestoreDoesNotRestartAnInFlightHomeLoad() = runBlocking {
+        val state = java.util.concurrent.atomic.AtomicReference("restoring-session")
+        val releaseHome = CompletableDeferred<Unit>()
+        val fake = FakeCore { method, _ -> when (method) {
+            "provider_account_snapshot" -> JSONObject().put("state", state.get()).put("revision", if (state.get() == "guest") 2 else 1)
+            "provider_home" -> { releaseHome.await(); JSONObject() }
+            else -> JSONObject()
+        } }
+        withModel(fake, waitForHome = false) { model ->
+            main { model.observe() }
+            await { model.account.value.state == "restoring-session" }
+            state.set("guest")
+            main { model.onCoreEvent(1, "account://changed", "{}") }
+            await { model.account.value.state == "guest" && model.account.value.revision == 2L }
+            releaseHome.complete(Unit)
+            await { model.page.value.loaded }
+            assertEquals(1, fake.calls.count { it.first == "provider_home" })
+        }
+    }
+
     @Test fun restoredAccountUsesCachedHomeWhileManualRefreshStillForcesNetwork() = runBlocking {
         val signedIn = java.util.concurrent.atomic.AtomicBoolean(false)
         val accountHomeStarted = CompletableDeferred<Unit>()
@@ -344,9 +700,9 @@ class NativeCatalogStateTest {
             await { fake.calls.count { it.first == "provider_set_favorite" } == 1 }
             assertTrue(track.key in model.pendingFavorites.value)
             response.complete(Unit)
-            await { model.pendingFavorites.value.isEmpty() }
+            await { model.pendingFavorites.value.isEmpty() && model.message.value != null }
             assertNull(model.favorites.value[track.key])
-            assertEquals(R.string.native_mutation_unknown, model.message.value!!.resource)
+            assertEquals(R.string.native_mutation_unknown, model.message.value?.resource)
             assertEquals(1, fake.calls.count { it.first == "provider_set_favorite" })
         }
     }
@@ -469,12 +825,16 @@ class NativeCatalogStateTest {
         }
     }
 
-    private suspend fun withModel(fake: FakeCore, block: suspend (NativeViewModel) -> Unit) {
+    private suspend fun withModel(fake: FakeCore, waitForHome: Boolean = true, block: suspend (NativeViewModel) -> Unit) {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as Application
         val model = withContext(Dispatchers.Main) { NativeViewModel(app, fake) }
-        try { await { model.page.value.loaded }; block(model) }
+        try { if (waitForHome) await { model.page.value.loaded }; block(model) }
         finally { withContext(Dispatchers.Main) { model.viewModelScope.cancel(); model.closePicker(); model.stopObserving() } }
     }
+    private fun homeFeed(id: String) = JSONObject("""{"madeForYou":[{"id":"$id"}]}""")
+    private fun homeCache(id: String?, awaiting: Boolean = false, refreshRequired: Boolean = false) = JSONObject()
+        .put("awaitingAccount", awaiting).put("refreshRequired", refreshRequired)
+        .put("snapshot", id?.let { JSONObject().put("stale", false).put("feed", homeFeed(it)) } ?: JSONObject.NULL)
     private suspend fun <T> main(block: suspend () -> T): T = withContext(Dispatchers.Main) { block() }
     private suspend fun await(condition: () -> Boolean) { withTimeout(5000) { while (!condition()) delay(10) } }
     private class FakeCore(val respond: suspend (String, JSONObject) -> JSONObject) : NativeCoreApi {

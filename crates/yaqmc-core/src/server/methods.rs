@@ -25,13 +25,13 @@ use super::types::{
     NamedRequest, OAuthCompleteParams, OAuthPrepareParams, OptionalAttemptParams, PathParams,
     PlaylistTracksParams, PrimaryModeParams, ProviderAreaParams, ProviderArtistCatalogParams,
     ProviderAttemptParams, ProviderAuthHeartbeatParams, ProviderAuthStartParams,
-    ProviderCursorPageParams, ProviderEntityParams, ProviderIdParams, ProviderNamedRequest,
-    ProviderOAuthCompleteParams, ProviderOAuthPrepareParams, ProviderOptionalAttemptParams,
-    ProviderPlaylistTracksParams, ProviderQualityParams, ProviderRefreshParams,
-    ProviderSearchParams, ProviderUrlParams, QualityParams, RecordErrorRequest, ReferenceParams,
-    ReorderParams, RepeatParams, SampleParams, SearchParams, SeekParams, SettingKeyParams,
-    SettingWriteParams, ShareSongParams, SongIdParams, StatisticsRangeParams, TrackParams,
-    TracksParams, UrlParams, ValueParams, VolumeParams,
+    ProviderCursorPageParams, ProviderEntityParams, ProviderHomeCacheParams, ProviderIdParams,
+    ProviderNamedRequest, ProviderOAuthCompleteParams, ProviderOAuthPrepareParams,
+    ProviderOptionalAttemptParams, ProviderPlaylistTracksParams, ProviderQualityParams,
+    ProviderRefreshParams, ProviderSearchParams, ProviderUrlParams, QualityParams,
+    RecordErrorRequest, ReferenceParams, ReorderParams, RepeatParams, SampleParams, SearchParams,
+    SeekParams, SettingKeyParams, SettingWriteParams, ShareSongParams, SongIdParams,
+    StatisticsRangeParams, TrackParams, TracksParams, UrlParams, ValueParams, VolumeParams,
 };
 use super::HostDispatchHooks;
 
@@ -46,6 +46,7 @@ pub const CORE_DISPATCH_METHODS: &[&str] = &[
     "provider_list",
     "provider_status",
     "provider_home",
+    "provider_home_cached",
     "provider_discover",
     "provider_area",
     "provider_library",
@@ -437,6 +438,7 @@ pub async fn dispatch(
             limit: spec.request_cap,
         });
     }
+    tracing::trace!(target: "core.protocol", method = spec.name, ?origin, "dispatching request");
     let result = invoke_core(core, host, origin, method_name, params).await?;
     let response_len = payload_len(&result);
     if !spec.accepts_response_bytes(response_len) {
@@ -493,6 +495,7 @@ async fn invoke_core(
             let ProviderRefreshParams {
                 provider_id,
                 refresh,
+                require_fresh,
                 ..
             } = parse_provider(core, &params)?;
             let catalog = require_provider_for_scope!(
@@ -501,7 +504,24 @@ async fn invoke_core(
                 &provider_id,
                 require_catalog_provider_for_profile
             );
-            provider(catalog.catalog_home(refresh).await)
+            if require_fresh {
+                provider(catalog.catalog_home_fresh(refresh).await)
+            } else {
+                provider(catalog.catalog_home(refresh).await)
+            }
+        }
+        "provider_home_cached" => {
+            let ProviderHomeCacheParams {
+                provider_id,
+                wait_for_account,
+            } = parse_provider(core, &params)?;
+            let catalog = require_provider_for_scope!(
+                core,
+                &params,
+                &provider_id,
+                require_catalog_provider_for_profile
+            );
+            provider(catalog.catalog_home_cached(wait_for_account).await)
         }
         "provider_discover" => {
             let ProviderRefreshParams {
@@ -1524,7 +1544,11 @@ async fn invoke_core(
         "diagnostics_clear_logs" => ok(ops::diagnostics_clear_logs(&core.logging())),
         "diagnostics_set_log_level" => {
             let LevelParams { level } = parse(&params)?;
-            cmd(ops::diagnostics_set_log_level(&core.storage(), level))
+            cmd(ops::diagnostics_set_log_level(
+                &core.storage(),
+                &core.logging(),
+                level,
+            ))
         }
         "diagnostics_current_level" => ok(core.logging().level()),
         "diagnostics_recent_errors" => ok(core.logging().recent_errors()),
@@ -1563,8 +1587,15 @@ async fn invoke_core(
             ok(result)
         }
         "issue_reporter_preview" => {
-            let IssueReporterPreviewParams { draft, request } = parse(&params)?;
-            ok(ops::issue_reporter_preview(core, host, draft, request).await)
+            let IssueReporterPreviewParams {
+                draft,
+                request,
+                host_details,
+            } = parse(&params)?;
+            ok(
+                ops::issue_reporter_preview(core, host, draft, request, host_details.as_deref())
+                    .await,
+            )
         }
         "issue_reporter_validate_url" => {
             let UrlParams { url } = parse(&params)?;

@@ -18,9 +18,11 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
@@ -218,6 +220,40 @@ class NativePlaybackTest {
 
     @Test fun systemPreviousRestartDoesNotPublishThePreviousQueueItem() {
         assertAuthoritativeSystemSkip(startIndex = 2, targetIndex = 2, next = false)
+    }
+
+    @Test fun systemTimelineHandlesUnrepresentableSongDurationsOnAppendAndRestore() {
+        val initial = core.snapshot()
+        val tracks = initial.getJSONArray("queue")
+        val appended = JSONObject(initial.toString())
+        val appendIndex = tracks.length()
+        val addedTrack = JSONObject(tracks.getJSONObject(1).toString()).put("durationMs", Long.MAX_VALUE)
+        appended.getJSONArray("queue").put(addedTrack)
+        appended.getJSONArray("queueEntries").put(JSONObject().put("id", "appended").put("track", addedTrack))
+        val restored = JSONObject(appended.toString())
+            .put("currentIndex", appendIndex).put("currentQueueEntryId", "appended")
+            .put("playbackState", "paused").put("playbackDurationMs", Long.MAX_VALUE)
+
+        for (openingSnapshot in listOf(initial, restored)) {
+            lateinit var player: CorePlayer
+            compose.runOnIdle {
+                player = CorePlayer(Looper.getMainLooper(), { true }, {}, {}, {}, {},
+                    sendCoreRequest = { _, _, reply ->
+                        reply(JSONObject().put("ok", true).put("result", openingSnapshot).toString())
+                    })
+            }
+            try {
+                if (openingSnapshot === initial) player.onCoreEvent(1, "player://snapshot", appended.toString())
+                compose.runOnIdle {
+                    val timeline = player.currentTimeline
+                    val window = Timeline.Window()
+                    assertEquals(tracks.length() + 1, timeline.windowCount)
+                    assertEquals(C.TIME_UNSET, timeline.getWindow(appendIndex, window).durationMs)
+                    assertEquals(tracks.getJSONObject(0).getLong("durationMs"), timeline.getWindow(0, window).durationMs)
+                    assertEquals(openingSnapshot.getInt("currentIndex"), player.currentMediaItemIndex)
+                }
+            } finally { compose.runOnIdle { player.close(); player.release() } }
+        }
     }
 
     private fun assertAuthoritativeSystemSkip(startIndex: Int, targetIndex: Int, next: Boolean) {

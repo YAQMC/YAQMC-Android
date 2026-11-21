@@ -331,15 +331,18 @@ class CorePlayer(
                     .setMediaId(id)
                     .setMediaMetadata(metadata)
                     .build()
-                val itemDuration = if (index == activeIndex && activeDuration != null) activeDuration else song.nullableLong("durationMs") ?: C.TIME_UNSET
+                val itemDuration = (if (index == activeIndex) activeDuration else null)
+                    ?: song.nullableLong("durationMs")
+                val durationUs = itemDuration?.takeIf { it in 0..Long.MAX_VALUE / 1_000 }
+                    ?.times(1_000) ?: C.TIME_UNSET
                 // Media3 timeline UIDs identify queue entries, including repeated copies of a song.
                 val uid = entries?.optJSONObject(index)?.optString("id")?.takeIf(String::isNotBlank) ?: "legacy:$index:$id"
                 add(
                     MediaItemData.Builder(uid)
                         .setMediaItem(item)
                         .setMediaMetadata(metadata)
-                        .setIsSeekable(itemDuration > 0)
-                        .setDurationUs(if (itemDuration >= 0) itemDuration * 1_000 else C.TIME_UNSET)
+                        .setIsSeekable(durationUs > 0)
+                        .setDurationUs(durationUs)
                         .build(),
                 )
             }

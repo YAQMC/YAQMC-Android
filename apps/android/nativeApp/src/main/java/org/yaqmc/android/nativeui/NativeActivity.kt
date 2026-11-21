@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import org.json.JSONObject
 import org.yaqmc.android.OAuthActivity
+import org.yaqmc.android.YaqmcApplication
 import org.yaqmc.android.core.DeepLinkInbox
 import org.yaqmc.android.core.DeepLinkManager
 import org.yaqmc.android.core.MobileLoginOwner
@@ -30,6 +31,7 @@ class NativeActivity : ComponentActivity() {
     private val deepLinks = DeepLinkManager()
     private var links: AutoCloseable? = null
     private var shareJob: Job? = null
+    private var startupFailed = false
     private val oauth = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         model.finishOAuth(if (it.resultCode == Activity.RESULT_OK) it.data?.dataString else null,
             if (it.resultCode == Activity.RESULT_OK) it.data?.getStringExtra(OAuthActivity.EXTRA_BROWSER_SESSION_COOKIES) else null)
@@ -41,6 +43,17 @@ class NativeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val app = application as? YaqmcApplication
+        if (app?.startupDiagnostics?.coreFailure != null) {
+            startupFailed = true
+            setContent {
+                NativeStartupFailure(app) {
+                    app.initializeCore()
+                    recreate()
+                }
+            }
+            return
+        }
         deepLinks.accept(intent)
         lifecycleScope.launch {
             model.plugins.state.collect {
@@ -56,22 +69,28 @@ class NativeActivity : ComponentActivity() {
             }
         }
         setContent {
-            NativeApp(model, login = ::login, share = ::share, reportDrawn = ::reportFullyDrawn)
+            NativeApp(model, login = ::login, share = ::share, reportDrawn = {
+                app?.startupDiagnostics?.firstPageDrawn()
+                reportFullyDrawn()
+            }, startupDiagnostics = app?.startupDiagnostics)
         }
     }
 
     override fun onStart() {
         super.onStart()
+        if (startupFailed) return
         PlaybackService.ensureStarted(this)
         model.observe()
     }
-    override fun onResume() { super.onResume(); MobileLoginOwner.lifecycle("foreground") }
-    override fun onPause() { MobileLoginOwner.lifecycle("background"); super.onPause() }
-    override fun onStop() { model.stopObserving(); super.onStop() }
+    override fun onResume() { super.onResume(); if (!startupFailed) MobileLoginOwner.lifecycle("foreground") }
+    override fun onPause() { if (!startupFailed) MobileLoginOwner.lifecycle("background"); super.onPause() }
+    override fun onStop() { if (!startupFailed) model.stopObserving(); super.onStop() }
     override fun onDestroy() { shareJob?.cancel(); links?.close(); super.onDestroy() }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); deepLinks.accept(intent) }
-    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean = model.plugins.key(event) || super.onKeyDown(keyCode, event)
-    override fun onKeyShortcut(keyCode: Int, event: android.view.KeyEvent): Boolean = model.plugins.key(event) || super.onKeyShortcut(keyCode, event)
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); if (!startupFailed) deepLinks.accept(intent) }
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean =
+        (!startupFailed && model.plugins.key(event)) || super.onKeyDown(keyCode, event)
+    override fun onKeyShortcut(keyCode: Int, event: android.view.KeyEvent): Boolean =
+        (!startupFailed && model.plugins.key(event)) || super.onKeyShortcut(keyCode, event)
 
     private fun login(method: String) {
         model.startLogin(method, resources.configuration.smallestScreenWidthDp,

@@ -4,16 +4,17 @@ use crate::CommentsProvider;
 use crate::{
     AccountLoginFlow, AccountLoginMethodDescriptor, AccountPlaylistDetail, AccountPlaylistSummary,
     AccountProvider, AccountSnapshot, AccountState, Album, AreaFeed, Artist, ArtistCatalogKind,
-    ArtistCatalogPage, AudioQualityPreference, CacheStats, CatalogProvider,
+    ArtistCatalogPage, AudioQualityPreference, CacheStats, CachedHomeFeed, CatalogProvider,
     CatalogProviderCapabilities, CatalogSearchKind, CollectPlaylistRequest, CreatePlaylistRequest,
-    DeletePlaylistRequest, DiscoverFeed, FavoriteMutationRequest, FavoriteMutationResult, HomeFeed,
-    LibrarySnapshot, LyricDocument, LyricsProvider, MusicProvider, OAuthLoginProvider,
-    OAuthPrepareResult, Page, PlaybackSourceError, PlaybackSourceProvider, PlaybackSourceResolver,
-    PlaybackSourceSelection, Playlist, PlaylistMutationResult, PlaylistTrackMutationRequest,
-    ProviderAccount, ProviderCommandError, ProviderProfileKey, ProviderProfileKeyError,
-    ProviderResult, ProviderScopedOutput, ProviderStatus, RecommendationBatch,
-    RecommendationProvider, RecommendationRequest, RemotePlayHistoryItem, RenamePlaylistRequest,
-    ResolvedPlaybackSource, SearchResult, ShareProvider, ShareTarget, Song, DEFAULT_PROFILE_ID,
+    DeletePlaylistRequest, DiscoverFeed, FavoriteMutationRequest, FavoriteMutationResult,
+    HomeCacheRead, HomeFeed, LibrarySnapshot, LyricDocument, LyricsProvider, MusicProvider,
+    OAuthLoginProvider, OAuthPrepareResult, Page, PlaybackSourceError, PlaybackSourceProvider,
+    PlaybackSourceResolver, PlaybackSourceSelection, Playlist, PlaylistMutationResult,
+    PlaylistTrackMutationRequest, ProviderAccount, ProviderCommandError, ProviderProfileKey,
+    ProviderProfileKeyError, ProviderResult, ProviderScopedOutput, ProviderStatus,
+    RecommendationBatch, RecommendationProvider, RecommendationRequest, RemotePlayHistoryItem,
+    RenamePlaylistRequest, ResolvedPlaybackSource, SearchResult, ShareProvider, ShareTarget, Song,
+    DEFAULT_PROFILE_ID,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -309,6 +310,27 @@ impl CatalogProvider for LegacyCapabilityAdapter {
     async fn catalog_home(&self, refresh: bool) -> ProviderResult<HomeFeed> {
         self.provider
             .home(refresh)
+            .await
+            .and_then(|value| self.validate(value))
+    }
+
+    async fn catalog_home_cached(&self, wait_for_account: bool) -> ProviderResult<HomeCacheRead> {
+        let result = self.provider.home_cached(wait_for_account).await?;
+        let snapshot = result
+            .snapshot
+            .map(|cached| -> ProviderResult<CachedHomeFeed> {
+                Ok(CachedHomeFeed {
+                    feed: self.validate(cached.feed)?,
+                    stale: cached.stale,
+                })
+            })
+            .transpose()?;
+        Ok(HomeCacheRead { snapshot, ..result })
+    }
+
+    async fn catalog_home_fresh(&self, refresh: bool) -> ProviderResult<HomeFeed> {
+        self.provider
+            .home_fresh(refresh)
             .await
             .and_then(|value| self.validate(value))
     }

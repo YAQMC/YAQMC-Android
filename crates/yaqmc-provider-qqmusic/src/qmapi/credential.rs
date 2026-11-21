@@ -413,7 +413,7 @@ where
     F: FnOnce(Credential) -> Fut,
     Fut: std::future::Future<Output = Result<Credential, QQMusicError>>,
 {
-    load_primary_session_v2_with_policy(credentials, legacy, now_ms, false, refresh).await
+    load_primary_session_v2_with_policy(credentials, legacy, now_ms, false, |_| {}, refresh).await
 }
 
 pub(crate) async fn load_primary_session_v2_with_policy<F, Fut>(
@@ -421,6 +421,7 @@ pub(crate) async fn load_primary_session_v2_with_policy<F, Fut>(
     legacy: Option<&SessionRecord>,
     now_ms: u64,
     force_refresh: bool,
+    reveal_scope: impl FnOnce(Option<OpaqueAccountScope>),
     refresh: F,
 ) -> Result<Option<SessionRecord>, QQMusicError>
 where
@@ -432,6 +433,7 @@ where
         .await
         .map_err(storage_error)?
     else {
+        reveal_scope(legacy.map(|session| session.account_cache_scope.clone()));
         return Ok(None);
     };
     let mut loaded = current_credential(&raw)?;
@@ -443,6 +445,7 @@ where
         .clone()
         .or(fallback_scope)
         .unwrap_or_else(OpaqueAccountScope::generate);
+    reveal_scope(Some(account_cache_scope.clone()));
     let mut expires_at_ms = credential_expires_at_ms(&loaded.credential, now_ms);
     let key_is_expired = credential_key_is_expired_at(&loaded.credential, now_ms);
     tracing::debug!(

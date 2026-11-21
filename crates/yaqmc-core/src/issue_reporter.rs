@@ -154,8 +154,17 @@ pub fn prepare_preview(
     snapshot: &DiagnosticsSnapshot,
     renderer_label: &str,
 ) -> IssuePreview {
+    prepare_preview_with_host(draft, snapshot, renderer_label, None)
+}
+
+pub(crate) fn prepare_preview_with_host(
+    draft: &IssueDraft,
+    snapshot: &DiagnosticsSnapshot,
+    renderer_label: &str,
+    host_details: Option<&str>,
+) -> IssuePreview {
     let title = compose_title(draft);
-    let body = compose_body(draft, snapshot, renderer_label);
+    let body = compose_body(draft, snapshot, renderer_label, host_details);
     let (url, too_long) = compose_url(draft.category, &title, &body);
     IssuePreview {
         title,
@@ -198,6 +207,7 @@ fn compose_body(
     draft: &IssueDraft,
     snapshot: &DiagnosticsSnapshot,
     renderer_label: &str,
+    host_details: Option<&str>,
 ) -> String {
     let mut body = String::new();
     if !draft.summary.trim().is_empty() {
@@ -236,6 +246,9 @@ fn compose_body(
     writeln!(&mut body, "- Renderer: {renderer_label}").ok();
     if let Some(host) = environment_host_line(renderer_label) {
         writeln!(&mut body, "- host: {host}").ok();
+    }
+    if let Some(details) = host_details.filter(|details| !details.trim().is_empty()) {
+        writeln!(&mut body, "{}", sanitize_report_field(details.trim())).ok();
     }
     writeln!(
         &mut body,
@@ -620,6 +633,22 @@ mod tests {
             linked_error_code: None,
             linked_op_id: None,
         }
+    }
+
+    #[test]
+    fn host_details_are_included_and_scrubbed_in_the_reviewed_report() {
+        let preview = prepare_preview_with_host(
+            &minimal_draft(),
+            &snapshot(),
+            "android/0.1.7",
+            Some("- Android: 15 (API 35)\n- Core startup: 125 ms\n- Authorization: Bearer fixture-secret"),
+        );
+        assert!(preview.body.contains("Android: 15 (API 35)"));
+        assert!(preview.body.contains("Core startup: 125 ms"));
+        assert!(preview.body.contains("Authorization: [REDACTED]"));
+        assert!(!preview.body.contains("fixture-secret"));
+        assert!(!preview.url.contains("fixture-secret"));
+        assert!(validate_open_url(&preview.url).is_ok());
     }
 
     #[test]

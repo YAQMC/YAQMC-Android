@@ -45,7 +45,7 @@ use std::{
 use subtle::ConstantTimeEq;
 #[cfg(test)]
 use tokio::sync::Notify;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]
@@ -1145,6 +1145,13 @@ struct LifecycleBarrier {
     release: Notify,
 }
 
+#[derive(Clone, PartialEq)]
+pub(crate) enum HomeRestore {
+    ReadingCredentials,
+    Validating(Option<OpaqueAccountScope>, u64),
+    Ready(Option<OpaqueAccountScope>),
+}
+
 pub(crate) struct QQMusicAuthService {
     protocol: Arc<dyn QQMusicAuthProtocol>,
     credentials: SpawnBlockingCredentialStore,
@@ -1159,6 +1166,7 @@ pub(crate) struct QQMusicAuthService {
     generation: AtomicU64,
     generation_token: StdMutex<CancellationToken>,
     playback_epoch: Arc<PlaybackEpochClock>,
+    home_restore: watch::Sender<HomeRestore>,
     #[cfg(test)]
     lifecycle_barrier: StdMutex<Option<Arc<LifecycleBarrier>>>,
 }
@@ -1191,6 +1199,7 @@ impl QQMusicAuthService {
             generation: AtomicU64::new(0),
             generation_token: StdMutex::new(CancellationToken::new()),
             playback_epoch: Arc::new(PlaybackEpochClock::default()),
+            home_restore: watch::channel(HomeRestore::Ready(None)).0,
             #[cfg(test)]
             lifecycle_barrier: StdMutex::new(None),
         }
@@ -1198,6 +1207,57 @@ impl QQMusicAuthService {
 
     pub(crate) async fn snapshot(&self) -> AccountSnapshot {
         self.snapshot.read().await.clone()
+    }
+
+    pub(crate) fn begin_startup_restore(&self) {
+        self.home_restore.send_if_modified(|state| {
+            if matches!(state, HomeRestore::Ready(_)) {
+                *state = HomeRestore::ReadingCredentials;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    pub(crate) async fn home_restore(&self, wait_for_account: bool) -> HomeRestore {
+        let mut state = self.home_restore.subscribe();
+        let value = state
+            .wait_for(|state| match state {
+                HomeRestore::ReadingCredentials => false,
+                HomeRestore::Validating(..) => !wait_for_account,
+                HomeRestore::Ready(_) => true,
+            })
+            .await
+            .expect("auth owns the sender");
+        match &*value {
+            HomeRestore::Validating(_, generation) if !self.is_current(*generation) => {
+                HomeRestore::Validating(None, self.generation())
+            }
+            value => value.clone(),
+        }
+    }
+
+    pub(crate) fn finish_home_refresh(&self, scope: &OpaqueAccountScope) {
+        self.home_restore.send_if_modified(|state| {
+            if matches!(state, HomeRestore::Ready(Some(expected)) if expected == scope) {
+                *state = HomeRestore::Ready(None);
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    fn publish_home_restore_scope(&self, generation: u64, scope: Option<OpaqueAccountScope>) {
+        self.home_restore.send_if_modified(|state| {
+            if matches!(state, HomeRestore::ReadingCredentials) && self.is_current(generation) {
+                *state = HomeRestore::Validating(scope, generation);
+                true
+            } else {
+                false
+            }
+        });
     }
 
     pub(crate) async fn revalidate(&self) -> Result<AccountSnapshot, QQMusicError> {
@@ -1239,7 +1299,7 @@ impl QQMusicAuthService {
         let mut renewed = false;
         if session.expires_at_ms <= now_ms {
             match self
-                .load_primary_session(Some(&session), false, cancellation.clone())
+                .load_primary_session(Some(&session), false, generation, cancellation.clone())
                 .await
             {
                 Ok(Some(candidate)) => {
@@ -1273,7 +1333,7 @@ impl QQMusicAuthService {
                 // Renew an upstream-rejected key before asking for another login,
                 // including revocations that precede the recorded local expiry.
                 match self
-                    .load_primary_session(Some(&session), true, cancellation.clone())
+                    .load_primary_session(Some(&session), true, generation, cancellation.clone())
                     .await
                 {
                     Ok(Some(candidate)) => {
@@ -1340,6 +1400,7 @@ impl QQMusicAuthService {
         &self,
         legacy: Option<&SessionRecord>,
         force_refresh: bool,
+        generation: u64,
         cancellation: CancellationToken,
     ) -> Result<Option<SessionRecord>, QQMusicError> {
         crate::qmapi::credential::load_primary_session_v2_with_policy(
@@ -1347,6 +1408,7 @@ impl QQMusicAuthService {
             legacy,
             self.clock.now_ms(),
             force_refresh,
+            |scope| self.publish_home_restore_scope(generation, scope),
             |credential| self.protocol.refresh_credential(credential, cancellation),
         )
         .await
@@ -2045,6 +2107,28 @@ impl QQMusicAuthService {
             return Err(QQMusicError::Cancelled);
         }
         let _lifecycle = self.lifecycle.lock().await;
+        self.begin_startup_restore();
+        let result = self.restore_with_lifecycle(generation, cancellation).await;
+        let scope = if result
+            .as_ref()
+            .is_ok_and(|value| matches!(value.account, AccountState::Authenticated { .. }))
+        {
+            self.current_session()
+                .await
+                .filter(|_| self.is_current(generation))
+                .map(|session| session.account_cache_scope)
+        } else {
+            None
+        };
+        self.home_restore.send_replace(HomeRestore::Ready(scope));
+        result
+    }
+
+    async fn restore_with_lifecycle(
+        &self,
+        generation: u64,
+        cancellation: CancellationToken,
+    ) -> Result<AccountSnapshot, QQMusicError> {
         self.ensure_generation_current(generation)?;
         if !self
             .publish_if_current(
@@ -2079,8 +2163,21 @@ impl QQMusicAuthService {
             "restore: loaded the legacy session slot"
         );
         let primary = self
-            .load_primary_session(legacy_session.as_ref(), false, cancellation.clone())
+            .load_primary_session(
+                legacy_session.as_ref(),
+                false,
+                generation,
+                cancellation.clone(),
+            )
             .await;
+        if !matches!(primary, Err(QQMusicError::Storage)) {
+            self.publish_home_restore_scope(
+                generation,
+                legacy_session
+                    .as_ref()
+                    .map(|session| session.account_cache_scope.clone()),
+            );
+        }
         tracing::debug!(
             target: "qqmusic.auth",
             v2_load_ok = matches!(primary, Ok(Some(_))),
@@ -5279,6 +5376,10 @@ mod tests {
         while service.generation() == 0 {
             tokio::task::yield_now().await;
         }
+        assert!(matches!(
+            service.home_restore(false).await,
+            HomeRestore::Validating(None, _)
+        ));
         protocol.validation_release.notify_waiters();
 
         assert!(restoring.await.expect("restore joins").is_err());
@@ -5292,6 +5393,10 @@ mod tests {
         );
         assert_eq!(service.snapshot().await.state_name(), "guest");
         assert!(credentials.value(ACTIVE_SESSION).is_none());
+        assert!(matches!(
+            service.home_restore(true).await,
+            HomeRestore::Ready(None)
+        ));
     }
 
     #[tokio::test]
@@ -5936,20 +6041,40 @@ mod tests {
     #[tokio::test]
     async fn restore_prefers_valid_v2_and_syncs_the_legacy_fallback() {
         let protocol = Arc::new(FakeProtocol::new(Vec::new()));
+        protocol.block_validation(1);
         let credentials = Arc::new(RecordingCredentialStore::default());
+        let legacy = session("legacy");
+        let mut primary = session("primary");
+        primary.uin = "2000000002".to_owned();
         credentials.seed(
             ACTIVE_SESSION,
-            serde_json::to_string(&session("legacy")).expect("legacy JSON"),
+            serde_json::to_string(&legacy).expect("legacy JSON"),
         );
         let service = auth_service(Arc::clone(&protocol), Arc::clone(&credentials));
-        crate::qmapi::credential::persist_v2(&service.credentials, &session("primary"))
+        crate::qmapi::credential::persist_v2(&service.credentials, &primary)
             .await
             .expect("seed v2");
 
-        service.restore().await.expect("restore");
+        let restoring = tokio::spawn({
+            let service = service.clone();
+            async move { service.restore().await }
+        });
+        wait_for_notification(&protocol.validation_entered).await;
+        assert!(matches!(service.home_restore(false).await,
+            HomeRestore::Validating(Some(scope), _) if scope == primary.account_cache_scope));
+        protocol.validation_release.notify_waiters();
+        restoring.await.expect("restore joins").expect("restore");
 
         let current = service.current_session().await.expect("current session");
         assert!(current.cookie_header.contains("SYNTHETIC_primary"));
+        service.finish_home_refresh(&legacy.account_cache_scope);
+        assert!(matches!(service.home_restore(true).await,
+            HomeRestore::Ready(Some(scope)) if scope == current.account_cache_scope));
+        service.finish_home_refresh(&current.account_cache_scope);
+        assert!(matches!(
+            service.home_restore(true).await,
+            HomeRestore::Ready(None)
+        ));
         let legacy: SessionRecord = serde_json::from_str(
             &credentials
                 .value(ACTIVE_SESSION)

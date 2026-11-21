@@ -191,6 +191,7 @@ dependencies {
   implementation("androidx.media3:media3-session:1.10.1")
   implementation("io.coil-kt.coil3:coil-compose:3.3.0")
   implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
+  implementation("com.squareup.okhttp3:okhttp:4.12.0")
   implementation("rustls:rustls-platform-verifier:0.1.1")
   testImplementation(kotlin("test-junit"))
   testImplementation("junit:junit:4.13.2")

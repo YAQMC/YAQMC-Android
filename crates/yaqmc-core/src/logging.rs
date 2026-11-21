@@ -26,7 +26,7 @@ use tracing_appender::{
     non_blocking::WorkerGuard,
     rolling::{RollingFileAppender, Rotation},
 };
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{fmt, prelude::*, reload, EnvFilter, Registry};
 
 /// Number of past error records kept in memory for issue reporting.
 pub const RECENT_ERROR_CAPACITY: usize = 32;
@@ -38,7 +38,7 @@ pub const DESCRIPTION_MAX_BYTES: usize = 4_096;
 pub const FIELD_VALUE_TRUNCATE: usize = 512;
 /// File name prefix used for rotated logs.
 pub const LOG_FILE_PREFIX: &str = "yaqmc";
-/// Persistent settings key used by host adapters for the selected startup level.
+/// Persistent settings key for the selected level.
 pub const LOG_LEVEL_SETTING_KEY: &str = "logging.level";
 
 const REDACTED: &str = "[REDACTED]";
@@ -60,8 +60,14 @@ impl LogLevel {
             LogLevel::Error => "yaqmc=error,error",
             LogLevel::Warn => "yaqmc=warn,warn",
             LogLevel::Info => "yaqmc=info,info",
-            LogLevel::Debug => "yaqmc=debug,info",
-            LogLevel::Trace => "yaqmc=trace,debug",
+            LogLevel::Debug => concat!(
+                "info,yaqmc=debug,android=debug,app=debug,audio=debug,core=debug,frontend=debug,",
+                "host=debug,media=debug,player=debug,plugin=debug,qqmusic=debug,storage=debug,stream=debug"
+            ),
+            LogLevel::Trace => concat!(
+                "info,yaqmc=trace,android=trace,app=trace,audio=trace,core=trace,frontend=trace,",
+                "host=trace,media=trace,player=trace,plugin=trace,qqmusic=trace,storage=trace,stream=trace"
+            ),
         }
     }
 
@@ -109,7 +115,8 @@ impl Default for LogLevel {
 pub struct LoggingHandle {
     session_id: Arc<str>,
     log_dir: Arc<PathBuf>,
-    level: LogLevel,
+    level: Arc<Mutex<LogLevel>>,
+    filter: Option<reload::Handle<EnvFilter, Registry>>,
     recent_errors: Arc<Mutex<VecDeque<ErrorRecord>>>,
 }
 
@@ -120,7 +127,8 @@ impl LoggingHandle {
         Self {
             session_id: generate_session_id().into(),
             log_dir: Arc::new(log_dir),
-            level,
+            level: Arc::new(Mutex::new(level)),
+            filter: None,
             recent_errors: Arc::new(Mutex::new(VecDeque::with_capacity(RECENT_ERROR_CAPACITY))),
         }
     }
@@ -134,7 +142,24 @@ impl LoggingHandle {
     }
 
     pub fn level(&self) -> LogLevel {
-        self.level
+        *self.level.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub(crate) fn set_level(
+        &self,
+        level: LogLevel,
+        persist: impl FnOnce() -> Result<(), String>,
+    ) -> Result<LogLevel, String> {
+        // Serialize updates so concurrent callers cannot leave the saved and live levels apart.
+        let mut current = self.level.lock().map_err(|error| error.to_string())?;
+        persist()?;
+        if let Some(filter) = &self.filter {
+            filter
+                .reload(EnvFilter::new(level.as_env_filter()))
+                .map_err(|error| error.to_string())?;
+        }
+        *current = level;
+        Ok(level)
     }
 
     pub fn recent_errors(&self) -> Vec<ErrorRecord> {
@@ -203,16 +228,18 @@ static GUARDS: OnceLock<Vec<WorkerGuard>> = OnceLock::new();
 /// Initialize the logger for the running application.
 ///
 /// * `log_dir` – platform application log directory (created if missing).
-/// * `level` – requested level; overridden by the `RUST_LOG` env var if set.
+/// * `level` – requested startup level; may be overridden at startup by `RUST_LOG`.
 ///
 /// Returns the shared handle. Safe to call at most once per process.
 pub fn init(log_dir: PathBuf, level: LogLevel) -> io::Result<LoggingHandle> {
+    if let Some(handle) = global().filter(|handle| handle.log_dir() == log_dir) {
+        return Ok(handle.clone());
+    }
     fs::create_dir_all(&log_dir)?;
-
-    let session_id = generate_session_id();
 
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level.as_env_filter()));
+    let (filter, reload_handle) = reload::Layer::new(filter);
 
     let file_appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
@@ -240,7 +267,7 @@ pub fn init(log_dir: PathBuf, level: LogLevel) -> io::Result<LoggingHandle> {
     let install_result = subscriber.try_init();
 
     let handle = LoggingHandle {
-        session_id: session_id.into(),
+        filter: install_result.is_ok().then_some(reload_handle),
         ..LoggingHandle::for_directory(log_dir, level)
     };
 
@@ -252,7 +279,7 @@ pub fn init(log_dir: PathBuf, level: LogLevel) -> io::Result<LoggingHandle> {
             target: "app.startup",
             session = %handle.session_id(),
             log_dir = %handle.log_dir().display(),
-            level = handle.level.as_str(),
+            level = handle.level().as_str(),
             "logger installed"
         );
     }
@@ -596,6 +623,67 @@ mod tests {
         assert!(LogLevel::Debug.as_env_filter().contains("yaqmc=debug"));
         assert!(LogLevel::Trace.as_env_filter().contains("yaqmc=trace"));
         assert!(LogLevel::Warn.as_env_filter().contains("warn"));
+    }
+
+    #[test]
+    fn log_level_changes_written_events_and_stays_saved() {
+        use crate::server::ops::diagnostics_set_log_level;
+        use crate::storage::StorageService;
+
+        fn events(phase: &str) {
+            tracing::info!(target: "android.startup", "info {phase}");
+            tracing::debug!(target: "player.seek", "debug {phase} authorization=Bearer fixture-secret");
+            tracing::trace!(target: "core.protocol", "trace {phase}");
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().join("data");
+        let cache_dir = root.path().join("cache");
+        let storage = StorageService::open(data_dir.clone(), cache_dir.clone()).unwrap();
+        let path = root.path().join("events.log");
+        let writer = RedactingWriter::new(fs::File::create(&path).unwrap());
+        let (filter, reload_handle) =
+            reload::Layer::new(EnvFilter::new(LogLevel::Info.as_env_filter()));
+        let subscriber = tracing_subscriber::registry().with(filter).with(
+            fmt::layer()
+                .with_ansi(false)
+                .with_writer(Mutex::new(writer)),
+        );
+        let handle = LoggingHandle {
+            filter: Some(reload_handle),
+            ..LoggingHandle::for_directory(root.path().to_owned(), LogLevel::Info)
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            events("ordinary");
+            diagnostics_set_log_level(&storage, &handle, LogLevel::Debug).unwrap();
+            assert_eq!(handle.level(), LogLevel::Debug);
+            events("detailed");
+            diagnostics_set_log_level(&storage, &handle, LogLevel::Trace).unwrap();
+            assert_eq!(handle.level(), LogLevel::Trace);
+            events("full");
+            assert!(handle
+                .set_level(LogLevel::Error, || Err("write failed".into()))
+                .is_err());
+            events("failed_change");
+            diagnostics_set_log_level(&storage, &handle, LogLevel::Warn).unwrap();
+            events("warning_only");
+        });
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("info ordinary"));
+        assert!(!written.contains("debug ordinary"));
+        assert!(written.contains("debug detailed"));
+        assert!(!written.contains("trace detailed"));
+        assert!(written.contains("trace full"));
+        assert!(written.contains("trace failed_change"));
+        assert!(!written.contains("warning_only"));
+        assert!(written.contains("authorization=[REDACTED]"));
+        assert!(!written.contains("fixture-secret"));
+        drop(storage);
+        let reopened = StorageService::open(data_dir, cache_dir).unwrap();
+        let saved_level = reopened.get_setting(LOG_LEVEL_SETTING_KEY).unwrap();
+        assert_eq!(persisted_log_level(saved_level.as_deref()), LogLevel::Warn);
     }
 
     #[test]

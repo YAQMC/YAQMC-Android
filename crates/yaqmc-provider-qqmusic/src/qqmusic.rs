@@ -53,12 +53,12 @@ use artwork::{
 
 use account::{
     AccountEntitlement, AccountPlaylistDetail, AccountPlaylistSummary, AccountSnapshot,
-    CollectPlaylistRequest, CreatePlaylistRequest, DeletePlaylistRequest, EntitlementTier,
-    FavoriteMutationRequest, FavoriteMutationResult, MembershipState, Page, PlaylistMutationResult,
-    PlaylistTrackMutationRequest, ProviderErrorCode, QQMusicAccountService, RemotePlayHistoryItem,
-    RemotePlayHistorySource, RenamePlaylistRequest,
+    AccountState, CollectPlaylistRequest, CreatePlaylistRequest, DeletePlaylistRequest,
+    EntitlementTier, FavoriteMutationRequest, FavoriteMutationResult, MembershipState, Page,
+    PlaylistMutationResult, PlaylistTrackMutationRequest, ProviderErrorCode, QQMusicAccountService,
+    RemotePlayHistoryItem, RemotePlayHistorySource, RenamePlaylistRequest,
 };
-use auth::{QQMusicAuthService, TransportQQMusicAuthProtocol};
+use auth::{HomeRestore, QQMusicAuthService, TransportQQMusicAuthProtocol};
 use clock::{Clock, SystemClock};
 use entitlement::{
     candidates_for_request, choose_source, ClientCapabilityState, PreviewRange, SourceCandidate,
@@ -87,16 +87,23 @@ const GUEST_HOME_CACHE_KEY: &str = "qqmusic:home:v5:guest";
 const DISCOVER_CACHE_KEY: &str = "qqmusic:discover:v2";
 
 fn home_cache_location(session: Option<&SessionRecord>) -> (String, &'static str) {
-    match session {
-        Some(session) => (
-            format!(
-                "qqmusic:account:{}:home-v5",
-                session.account_cache_scope.as_str()
-            ),
+    home_cache_location_for_scope(session.map(|session| &session.account_cache_scope))
+}
+
+fn home_cache_location_for_scope(scope: Option<&OpaqueAccountScope>) -> (String, &'static str) {
+    match scope {
+        Some(scope) => (
+            format!("qqmusic:account:{}:home-v5", scope.as_str()),
             cache::ACCOUNT_CACHE_KIND,
         ),
         None => (GUEST_HOME_CACHE_KEY.to_owned(), "metadata"),
     }
+}
+
+pub(crate) struct HomeCacheSnapshot {
+    pub(crate) feed: Option<(HomeFeed, bool)>,
+    pub(crate) awaiting_account: bool,
+    pub(crate) refresh_required: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -809,6 +816,10 @@ impl QQMusicService {
         self.auth.refresh(attempt_id.as_deref()).await
     }
 
+    pub(crate) fn begin_startup_restore(&self) {
+        self.auth.begin_startup_restore();
+    }
+
     pub async fn restore_session(&self) {
         match self.auth.restore().await {
             Ok(snapshot) => tracing::info!(
@@ -1100,30 +1111,78 @@ impl QQMusicService {
     }
 
     pub async fn home(&self, refresh: bool) -> Result<HomeFeed, QQMusicError> {
+        self.load_home(refresh, true).await
+    }
+
+    async fn home_session(&self) -> Result<(Option<SessionRecord>, bool), QQMusicError> {
+        let restore = self.auth.home_restore(true).await;
         let session = self.auth.current_session().await;
+        if session.is_none() {
+            match self.auth.snapshot().await.account {
+                AccountState::RestoringSession { .. } => return Err(QQMusicError::Cancelled),
+                AccountState::NetworkError {
+                    attempt_id: None, ..
+                } => return Err(QQMusicError::Offline),
+                AccountState::SecureStoreUnavailable { .. } => return Err(QQMusicError::Storage),
+                _ => {}
+            }
+        }
+        let should_refresh = matches!(&restore, HomeRestore::Ready(Some(scope))
+            if session.as_ref().is_some_and(|session| &session.account_cache_scope == scope));
+        Ok((session, should_refresh))
+    }
+
+    pub(crate) async fn load_home(
+        &self,
+        refresh: bool,
+        allow_stale_on_error: bool,
+    ) -> Result<HomeFeed, QQMusicError> {
+        let (session, should_refresh) = self.home_session().await?;
         let (cache_key, _) = home_cache_location(session.as_ref());
-        if !refresh {
+        if !refresh && !should_refresh {
             if let Some(feed) = self.cached_home(&cache_key).await? {
                 return Ok(feed);
             }
         }
         let _home_lock = self.home_guard.lock().await;
-        let session = self.auth.current_session().await;
+        let (session, restored) = self.home_session().await?;
         let (cache_key, cache_kind) = home_cache_location(session.as_ref());
-        if !refresh {
+        if !refresh && !restored {
             if let Some(feed) = self.cached_home(&cache_key).await? {
                 return Ok(feed);
             }
         }
-        match self.build_home(session).await {
+        let scope = session
+            .as_ref()
+            .map(|session| session.account_cache_scope.clone());
+        let generation = self.auth.generation();
+        let result = self.build_home(session).await;
+        if self.auth.generation() != generation
+            || self
+                .auth
+                .current_session()
+                .await
+                .map(|session| session.account_cache_scope)
+                != scope
+        {
+            return Err(QQMusicError::Cancelled);
+        }
+        match result {
             Ok(feed) => {
                 self.storage
                     .put_json(&cache_key, cache_kind, &feed, METADATA_TTL_MS)
                     .map_err(|_| QQMusicError::Storage)?;
+                // Keep forcing the verified refresh until the response reaches the cache.
+                if let Some(scope) = scope.as_ref().filter(|_| restored) {
+                    self.auth.finish_home_refresh(scope);
+                }
                 self.remember_home_songs(&feed).await;
                 Ok(feed)
             }
             Err(error) => {
+                if !allow_stale_on_error {
+                    return Err(error);
+                }
                 let feed = self
                     .storage
                     .get_json(&cache_key, true)
@@ -1133,6 +1192,65 @@ impl QQMusicService {
                 Ok(feed)
             }
         }
+    }
+
+    pub(crate) async fn cached_home_snapshot(
+        &self,
+        wait_for_account: bool,
+    ) -> Result<HomeCacheSnapshot, QQMusicError> {
+        loop {
+            let restore = self.auth.home_restore(wait_for_account).await;
+            let current_scope = self
+                .auth
+                .current_session()
+                .await
+                .map(|session| session.account_cache_scope);
+            let awaiting_account = matches!(restore, HomeRestore::Validating(..));
+            let cache_scope = match &restore {
+                HomeRestore::Validating(scope, _) => scope.as_ref(),
+                _ => current_scope.as_ref(),
+            };
+            let (cache_key, _) = home_cache_location_for_scope(cache_scope);
+            let mut feed = self.read_home_cache(&cache_key)?;
+            if awaiting_account && feed.is_none() && cache_scope.is_some() {
+                feed = self.read_home_cache(GUEST_HOME_CACHE_KEY)?;
+            }
+            if !awaiting_account {
+                if let Some((feed, _)) = &feed {
+                    self.remember_home_songs(feed).await;
+                }
+            }
+            if restore == self.auth.home_restore(wait_for_account).await
+                && current_scope
+                    == self
+                        .auth
+                        .current_session()
+                        .await
+                        .map(|session| session.account_cache_scope)
+            {
+                let refresh_required = matches!(&restore, HomeRestore::Ready(Some(scope)) if Some(scope) == current_scope.as_ref());
+                return Ok(HomeCacheSnapshot {
+                    feed,
+                    awaiting_account,
+                    refresh_required,
+                });
+            }
+        }
+    }
+
+    fn read_home_cache(&self, key: &str) -> Result<Option<(HomeFeed, bool)>, QQMusicError> {
+        let fresh = self
+            .storage
+            .get_json::<HomeFeed>(key, false)
+            .map_err(|_| QQMusicError::Storage)?;
+        if let Some(feed) = fresh {
+            return Ok(Some((feed, false)));
+        }
+        Ok(self
+            .storage
+            .get_json::<HomeFeed>(key, true)
+            .map_err(|_| QQMusicError::Storage)?
+            .map(|feed| (feed, true)))
     }
 
     async fn cached_home(&self, cache_key: &str) -> Result<Option<HomeFeed>, QQMusicError> {
@@ -6325,15 +6443,9 @@ mod tests {
         server.abort();
     }
 
-    #[tokio::test]
-    async fn home_cached_public_catalog_does_not_wait_for_a_rebuild() {
-        let root = tempfile::tempdir().expect("temp root");
-        let storage = Arc::new(
-            StorageService::open(root.path().join("data"), root.path().join("cache"))
-                .expect("storage"),
-        );
+    fn home_test_feed(id: &str) -> HomeFeed {
         let album = Album {
-            id: "qqmusic:album:fixture".to_owned(),
+            id: id.to_owned(),
             title: "Fixture album".to_owned(),
             artist: ArtistSummary {
                 id: "qqmusic:artist:fixture".to_owned(),
@@ -6350,28 +6462,31 @@ mod tests {
             description: "Cached public catalog fixture".to_owned(),
             tracks: Vec::new(),
         };
-        storage
-            .put_json(
-                GUEST_HOME_CACHE_KEY,
-                "metadata",
-                &HomeFeed {
-                    featured: FeaturedRelease {
-                        eyebrow: "FIXTURE".to_owned(),
-                        album,
-                    },
-                    recently_played: Vec::new(),
-                    made_for_you: Vec::new(),
-                    new_releases: Vec::new(),
-                    guess_songlist: None,
-                    recommended_songlists: Vec::new(),
-                    daily_songlist: None,
-                    new_song_songlist: None,
-                    radar_based_on_song: None,
-                    radar_songs: Vec::new(),
-                },
-                METADATA_TTL_MS,
-            )
-            .expect("cache fixture");
+        HomeFeed {
+            featured: FeaturedRelease {
+                eyebrow: "FIXTURE".to_owned(),
+                album,
+            },
+            recently_played: Vec::new(),
+            made_for_you: Vec::new(),
+            new_releases: Vec::new(),
+            guess_songlist: None,
+            recommended_songlists: Vec::new(),
+            daily_songlist: None,
+            new_song_songlist: None,
+            radar_based_on_song: None,
+            radar_songs: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn home_cached_public_catalog_does_not_wait_for_a_rebuild() {
+        let root = tempfile::tempdir().expect("temp root");
+        let storage = Arc::new(
+            StorageService::open(root.path().join("data"), root.path().join("cache"))
+                .expect("storage"),
+        );
+        let feed = home_test_feed("qqmusic:album:fixture");
         let calls = Arc::new(AtomicUsize::new(0));
         let account_transport: Arc<dyn QqTransport> = Arc::new(RecordingAccountTransport {
             calls: Arc::clone(&calls),
@@ -6387,6 +6502,45 @@ mod tests {
         .expect("service");
 
         let _rebuild = service.home_guard.lock().await;
+        storage
+            .put_json(
+                "qqmusic:account:00000000000000000000000000000001:home-v5",
+                cache::ACCOUNT_CACHE_KIND,
+                &feed,
+                METADATA_TTL_MS,
+            )
+            .expect("private cache fixture");
+        let absent =
+            tokio::time::timeout(Duration::from_secs(1), service.cached_home_snapshot(false))
+                .await
+                .expect("guest cache read should not wait for a rebuild")
+                .expect("guest cache read");
+        assert!(absent.feed.is_none());
+        assert!(!absent.awaiting_account);
+        storage
+            .put_json(GUEST_HOME_CACHE_KEY, "metadata", &feed, 0)
+            .expect("expired cache fixture");
+        let (stale_feed, stale) =
+            tokio::time::timeout(Duration::from_secs(1), service.cached_home_snapshot(false))
+                .await
+                .expect("stale cache read should not wait for a rebuild")
+                .expect("guest cache read")
+                .feed
+                .expect("stale public cache");
+        assert!(stale);
+        assert_eq!(stale_feed.featured.album.id, feed.featured.album.id);
+        storage
+            .put_json(GUEST_HOME_CACHE_KEY, "metadata", &feed, METADATA_TTL_MS)
+            .expect("refresh cache fixture");
+        assert!(
+            !service
+                .cached_home_snapshot(false)
+                .await
+                .expect("guest cache read")
+                .feed
+                .expect("fresh public cache")
+                .1
+        );
         let home = tokio::time::timeout(Duration::from_secs(1), service.home(false))
             .await
             .expect("fresh cached home should not wait for an unrelated rebuild")
@@ -6396,6 +6550,156 @@ mod tests {
         assert_eq!(calls.load(Ordering::Acquire), 0);
         assert_eq!(service.clock.now_ms(), 4_200);
         assert!(Arc::strong_count(&service.account_transport) >= 1);
+    }
+
+    struct HomeRestoreTransport {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        temporary: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl QqTransport for HomeRestoreTransport {
+        async fn execute(
+            &self,
+            request: TransportRequest,
+        ) -> Result<TransportResponse, QQMusicError> {
+            assert_eq!(request.operation, "auth.session.validate");
+            self.entered.notify_one();
+            self.release.notified().await;
+            if self.temporary {
+                Err(QQMusicError::Offline)
+            } else {
+                Err(QQMusicError::AuthenticationExpired)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn home_restoration_previews_the_stored_scope_and_distinguishes_temporary_failure_from_expiry(
+    ) {
+        for temporary in [true, false] {
+            let storage = Arc::new(StorageService::temporary());
+            let credentials = Arc::new(MemoryCredentialStore::default());
+            let session = SessionRecord {
+                version: 1,
+                uin: "1000000001".to_owned(),
+                encrypted_uin: None,
+                cookie_header: "qm_keyst=SYNTHETIC; qqmusic_key=SYNTHETIC; tmeLoginType=2"
+                    .to_owned(),
+                expires_at_ms: 1_800_000_000_000,
+                account_cache_scope: OpaqueAccountScope::generate(),
+                login_credential: None,
+            };
+            credentials
+                .save(
+                    auth::ACTIVE_SESSION,
+                    &serde_json::to_string(&session).unwrap(),
+                )
+                .expect("seed saved login");
+            let (account_key, kind) = home_cache_location(Some(&session));
+            storage
+                .put_json(
+                    &account_key,
+                    kind,
+                    &home_test_feed("personal"),
+                    METADATA_TTL_MS,
+                )
+                .expect("seed personal home");
+            storage
+                .put_json(
+                    GUEST_HOME_CACHE_KEY,
+                    "metadata",
+                    &home_test_feed("public"),
+                    METADATA_TTL_MS,
+                )
+                .expect("seed public home");
+            let transport = Arc::new(HomeRestoreTransport {
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+                temporary,
+            });
+            let service = Arc::new(
+                QQMusicService::new_with_runtime(
+                    storage,
+                    credentials,
+                    PathBuf::new(),
+                    transport.clone(),
+                    Arc::new(clock::ManualClock::new(1_700_000_000_000)),
+                )
+                .expect("service"),
+            );
+
+            service.begin_startup_restore();
+            let wait = Duration::from_millis(20);
+            assert!(tokio::time::timeout(wait, service.home(false))
+                .await
+                .is_err());
+            let restore = tokio::spawn({
+                let service = service.clone();
+                async move { service.restore_session().await }
+            });
+            tokio::time::timeout(Duration::from_secs(1), transport.entered.notified())
+                .await
+                .expect("validation started");
+            let preview = service
+                .cached_home_snapshot(false)
+                .await
+                .expect("read preview");
+            assert!(preview.awaiting_account);
+            assert_eq!(
+                preview.feed.expect("private cache").0.featured.album.id,
+                "personal"
+            );
+            assert!(service.auth.current_session().await.is_none());
+            assert!(
+                tokio::time::timeout(wait, service.cached_home_snapshot(true))
+                    .await
+                    .is_err()
+            );
+            assert!(tokio::time::timeout(wait, service.home(false))
+                .await
+                .is_err());
+
+            transport.release.notify_one();
+            restore.await.expect("restore joins");
+            let ready = service
+                .cached_home_snapshot(true)
+                .await
+                .expect("read final cache");
+            assert!(!ready.awaiting_account);
+            assert_eq!(
+                ready.feed.expect("public cache").0.featured.album.id,
+                "public"
+            );
+            if temporary {
+                assert!(matches!(
+                    service.home(false).await,
+                    Err(QQMusicError::Offline)
+                ));
+                assert!(matches!(
+                    service.home(true).await,
+                    Err(QQMusicError::Offline)
+                ));
+            } else {
+                assert_eq!(
+                    service
+                        .home(false)
+                        .await
+                        .expect("guest home")
+                        .featured
+                        .album
+                        .id,
+                    "public"
+                );
+                assert!(service
+                    .home_session()
+                    .await
+                    .expect("can fetch guest home")
+                    .0
+                    .is_none());
+            }
+        }
     }
 
     #[test]

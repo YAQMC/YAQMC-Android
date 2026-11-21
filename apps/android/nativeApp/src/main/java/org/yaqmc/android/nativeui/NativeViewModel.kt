@@ -3,6 +3,7 @@ package org.yaqmc.android.nativeui
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import androidx.core.content.FileProvider
 import java.io.File
 import org.yaqmc.android.BuildConfig
@@ -15,6 +16,7 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +25,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -32,16 +35,27 @@ import org.yaqmc.android.core.CoreManager
 import org.yaqmc.android.core.MobileLoginOwner
 import org.yaqmc.android.core.MobileLoginPolicy
 import org.yaqmc.android.R
+import org.yaqmc.android.AndroidDiagnosticUploader
+import org.yaqmc.android.DIAGNOSTIC_DESCRIPTION_MAX_BYTES
+import org.yaqmc.android.DiagnosticUploadHttpError
+import org.yaqmc.android.androidSupportDetails
+import org.yaqmc.android.androidSupportText
 
 internal data class NativeRoute(val kind: String = "home", val id: String = "", val query: String = "", val searchKind: String = "song", val playlist: String = "", val tab: String = "top", val providerId: String = "qqmusic", val profileId: String = "default", val pluginId: String = "")
+private val NativeRoute.usesQqHome: Boolean
+    get() = providerId == "qqmusic" && (kind == "home" || (kind == "search" && query.isBlank()))
 private data class NativeRootState(val route: NativeRoute, val backStack: List<NativeRoute>)
-internal data class PageState(val page: CatalogPage = CatalogPage(titleFor("home")), val loading: Boolean = false, val error: NativeText? = null, val loadingMore: Boolean = false, val moreError: NativeText? = null, val loaded: Boolean = false)
+internal data class PageState(val page: CatalogPage = CatalogPage(titleFor("home")), val loading: Boolean = false, val error: NativeText? = null, val loadingMore: Boolean = false, val moreError: NativeText? = null, val loaded: Boolean = false, val awaitingAccount: Boolean = false)
+
+private val AccountUi.restoreNeedsRetry: Boolean
+    get() = state == "secure-store-unavailable" || (state == "network-error" && attempt.isBlank())
 
 @UnstableApi
 internal class NativeViewModel(application: Application, val core: NativeCoreApi,
     private val checkUpdate: () -> AndroidUpdateResult = {
         AndroidUpdateChecker(BuildConfig.VERSION_NAME.substringBefore("-native-")).check()
     },
+    private val uploadDiagnostics: suspend (File, String, (Int) -> Unit) -> String = AndroidDiagnosticUploader()::submit,
 ) : AndroidViewModel(application), CoreManager.Callback {
     constructor(application: Application) : this(application, NativeCore(application))
     val plugins = NativePlugins(application, core, viewModelScope)
@@ -61,6 +75,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     private val _message = MutableStateFlow<NativeText?>(null)
     val message = _message.asStateFlow()
     private val _quality = MutableStateFlow("automatic")
+    private var preferredQualityRevision = 0L
     val quality = _quality.asStateFlow()
     private val _qualityBusy = MutableStateFlow(false)
     val qualityBusy = _qualityBusy.asStateFlow()
@@ -81,6 +96,9 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     val statistics = _statistics.asStateFlow()
     private val _diagnostics = MutableStateFlow(NativeDiagnosticsState())
     val diagnostics = _diagnostics.asStateFlow()
+    private val _diagnosticUpload = MutableStateFlow(NativeDiagnosticUploadState())
+    val diagnosticUpload = _diagnosticUpload.asStateFlow()
+    private var diagnosticUploadAttempt: DiagnosticUploadAttempt? = null
     private val _updateState = MutableStateFlow(NativeUpdateState())
     val updateState = _updateState.asStateFlow()
     private val _issueState = MutableStateFlow(NativeIssueState())
@@ -98,6 +116,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     val preferences = preferenceStore.state
     private val backStack = mutableListOf<NativeRoute>()
     private var pageJob: Job? = null
+    private var homeAccountJob: Job? = null
     private var pageNumber = 1
     private val pageCache = linkedMapOf<NativeRoute, Pair<CatalogPage, Int>>()
     private val catalog = NativeCatalogRepository { method, params -> core.objectResult(method, params) }
@@ -120,6 +139,7 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     val accountBusy = _accountBusy.asStateFlow()
     private val snapshots = Channel<String>(Channel.CONFLATED)
     private var observing = false
+    private var foregroundSync: Job? = null
     private var oauthAttempt: String? = null
     private var oauthScope: Pair<String, String>? = null
     private val _loginMethods = MutableStateFlow<List<JSONObject>>(emptyList())
@@ -182,27 +202,33 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         plugins.refresh()
         // Events can be missed or their pending refresh cancelled while stopped.
         if (route.value.kind == "statistics") loadStatistics(quiet = true)
-        action {
-            snapshots.trySend(core.objectResult("player_snapshot").toString())
-            val before = account.value.revision to account.value.state
-            refreshAccount()
-            if (before != (account.value.revision to account.value.state) && route.value.kind == "home") load(keepContent = true)
-            startAccountRevalidation()
-            if (route.value.kind in setOf("favorites", "recent", "account-playlists", "account-playlist")) load(refresh = true)
-            _quality.value = core.objectResult("provider_status", provider()).text("preferredQuality", "automatic")
+        foregroundSync = viewModelScope.launch {
+            launch { syncInBackground("player_snapshot") { snapshots.trySend(core.objectResult("player_snapshot").toString()) } }
+            launch {
+                syncInBackground("provider_account_snapshot") {
+                    val before = account.value
+                    refreshAccount()
+                    refreshHomeForAccountChange(before)
+                }
+                startAccountRevalidation()
+                if (route.value.kind in setOf("favorites", "recent", "account-playlists", "account-playlist")) load(refresh = true)
+            }
+            launch { syncInBackground("continuation_snapshot") { acceptContinuation(core.objectResult("continuation_snapshot")) } }
         }
-        action { acceptContinuation(core.objectResult("continuation_snapshot")) }
     }
 
     fun stopObserving() {
         observing = false
         CoreManager.removeCallback(this)
+        foregroundSync?.cancel()
+        accountJob?.cancel()
         revalidationJob?.cancel()
         statisticsRefreshJob?.cancel()
     }
 
     override fun onCleared() {
         stopObserving()
+        discardDiagnosticUpload()
         plugins.close()
         snapshots.close()
         super.onCleared()
@@ -223,13 +249,19 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
             }
             "account://changed" -> viewModelScope.launch {
                 accountJob?.cancel()
-                accountJob = action {
-                    val before = account.value.revision to account.value.state
-                    refreshAccount()
-                    if (before != (account.value.revision to account.value.state)) {
-                        pageCache.clear()
-                        val home = route.value.kind == "home"
-                        if (route.value.kind in setOf("home", "favorites", "recent", "account-playlists", "account-playlist")) load(refresh = !home, keepContent = home)
+                accountJob = launch {
+                    syncInBackground("provider_account_snapshot") {
+                        val before = account.value
+                        refreshAccount()
+                        if (before.revision != account.value.revision || before.state != account.value.state) {
+                            pageCache.clear()
+                            if (route.value.kind in setOf("favorites", "recent", "account-playlists", "account-playlist")) load(refresh = true)
+                        }
+                        refreshHomeForAccountChange(before)
+                        if (observing && !before.restoreNeedsRetry && account.value.restoreNeedsRetry) {
+                            lastAccountRefreshAt = android.os.SystemClock.elapsedRealtime()
+                            startAccountRevalidation()
+                        }
                     }
                 }
             }
@@ -347,12 +379,30 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
 
     fun selectDiscoverTab(tab: String) { _discoverTab.value = tab }
 
+    private fun refreshHomeForAccountChange(before: AccountUi) {
+        if (route.value.kind != "home" && !route.value.usesQqHome) return
+        if (homeAccountJob?.isActive == true &&
+            (before.revision == 0L || before.state == "restoring-session" || before.restoreNeedsRetry)) return
+        val after = account.value
+        if (_page.value.awaitingAccount && after.revision != 0L && after.state != "restoring-session") {
+            pageCache.remove(route.value)
+            load()
+            return
+        }
+        val resolvedRestoreFailure = before.restoreNeedsRetry && !after.restoreNeedsRetry && after.state != "restoring-session"
+        if (resolvedRestoreFailure || before.authenticated != after.authenticated || (after.authenticated && (before.revision != after.revision || before.identity != after.identity))) {
+            pageCache.remove(route.value)
+            load(keepContent = !before.authenticated)
+        }
+    }
+
     fun load(refresh: Boolean = false, more: Boolean = false, keepContent: Boolean = false) {
         if (more && (_page.value.loading || _page.value.loadingMore || !_page.value.page.hasMore)) return
         if (refresh && _preparingPage.value) cancelPlaybackPreparation()
         pageJob?.cancel()
         val target = _route.value
         if (target.kind in nativeUtilityDestinations || target.kind in setOf("library", "player", "queue")) return
+        if (target.usesQqHome && accountScope != (target.providerId to target.profileId)) pageCache.remove(target)
         if (!refresh && !more) pageCache[target]?.let { cached ->
             pageNumber = cached.second
             _page.value = PageState(page = cached.first, loaded = true)
@@ -367,6 +417,8 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
             else -> PageState(CatalogPage(titleFor(target.kind)), loading = true)
         }
         pageJob = viewModelScope.launch {
+            val currentJob = currentCoroutineContext()[Job]
+            var showingCachedHome = false
             try {
                 val accountPage = target.kind in setOf("favorites", "recent", "account-playlists", "account-playlist")
                 if (accountPage) {
@@ -382,8 +434,56 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
                 val revision = account.value.revision
                 val favoriteVersion = favoriteMutationSerial
                 val number = if (more) pageNumber + 1 else 1
-                val result = catalog.load(target, refresh, number, if (more) oldPage.cursor else null)
-                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                var homeCache = if (target.usesQqHome && !more) {
+                    syncInBackground("provider_home_cached") { catalog.cachedHome(target) }
+                } else null
+                currentCoroutineContext().ensureActive()
+                if (_route.value != target) return@launch
+                val preview = homeCache?.awaitingAccount == true
+                if (preview || homeCache?.refreshRequired == true) homeAccountJob = currentJob
+                if (preview) {
+                    val snapshot = homeCache?.snapshot?.page?.takeIf { it.sections.isNotEmpty() }
+                    _page.value = PageState(snapshot ?: CatalogPage(titleFor(target.kind)), loading = refresh || snapshot == null,
+                        loaded = snapshot != null, awaitingAccount = true)
+                    homeCache = catalog.cachedHome(target, waitForAccount = true)
+                    currentCoroutineContext().ensureActive()
+                    if (_route.value != target) return@launch
+                    // Replace the unverified preview with the cache of the final account, if any.
+                    val ready = homeCache.snapshot?.page?.takeIf { it.sections.isNotEmpty() }
+                    _page.value = PageState(ready ?: CatalogPage(titleFor(target.kind)), loading = refresh || ready == null, loaded = ready != null)
+                    showingCachedHome = ready != null
+                }
+                if (refresh && target.usesQqHome) {
+                    refreshAccount()
+                    if (account.value.restoreNeedsRetry) {
+                        lastAccountRefreshAt = android.os.SystemClock.elapsedRealtime()
+                        val refreshError = try {
+                            core.invoke("provider_account_refresh", provider(target.providerId, target.profileId))
+                            null
+                        } catch (error: CoreFailure) {
+                            error
+                        }
+                        refreshAccount()
+                        if (refreshError != null && account.value.restoreNeedsRetry) throw refreshError
+                        val ready = catalog.cachedHome(target, waitForAccount = true).snapshot?.page
+                        _page.value = PageState(ready ?: CatalogPage(titleFor(target.kind)), loading = true, loaded = ready != null)
+                    }
+                }
+                val cachedHome = homeCache?.snapshot
+                val refreshRequired = homeCache?.refreshRequired == true
+                if (!refresh && (cachedHome?.stale == true || refreshRequired) && cachedHome?.page?.sections?.isNotEmpty() == true) {
+                    _page.value = PageState(cachedHome.page, loaded = true)
+                    showingCachedHome = true
+                }
+                val result = cachedHome?.takeUnless { refresh || it.stale || refreshRequired }?.page ?: try {
+                    catalog.load(target, refresh, number, if (more) oldPage.cursor else null)
+                } catch (error: CoreFailure) {
+                    if (target.kind != "home" || refresh || more || !error.retryable) throw error
+                    logBackgroundFailure("provider_home", error)
+                    delay(400)
+                    catalog.load(target, refresh = false, number = 1, cursor = null)
+                }
+                currentCoroutineContext().ensureActive()
                 if (_route.value != target) return@launch
                 if (accountPage && revision != account.value.revision) {
                     load(refresh = true)
@@ -409,8 +509,18 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
                 if (target.kind == "account-playlists") projectPlaylists(result.sections.flatMap { it.cards })
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) {
-                if (_route.value == target) _page.value = if (more) _page.value.copy(loadingMore = false, moreError = errorText(error, R.string.native_load_failed))
-                    else _page.value.copy(loading = false, error = errorText(error, R.string.native_load_failed))
+                currentCoroutineContext().ensureActive()
+                if (target.kind == "home") logBackgroundFailure("provider_home", error)
+                if (_route.value == target) _page.value = when {
+                    more -> _page.value.copy(loadingMore = false, moreError = errorText(error, R.string.native_load_failed))
+                    _page.value.awaitingAccount && _page.value.loaded && (error as? CoreFailure)?.code == "timeout" ->
+                        _page.value.copy(loading = false)
+                    _page.value.awaitingAccount -> PageState(CatalogPage(titleFor(target.kind)), error = errorText(error, R.string.native_load_failed))
+                    !refresh && (target.kind == "home" || target.usesQqHome) && (keepContent || showingCachedHome) && _page.value.loaded -> _page.value.copy(loading = false)
+                    else -> _page.value.copy(loading = false, error = errorText(error, R.string.native_load_failed))
+                }
+            } finally {
+                if (homeAccountJob === currentJob) homeAccountJob = null
             }
         }
     }
@@ -680,6 +790,14 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         }
     }
 
+    suspend fun loadSettingsQuality() {
+        val revision = preferredQualityRevision
+        syncInBackground("provider_status") {
+            val status = core.objectResult("provider_status", provider())
+            if (revision == preferredQualityRevision) _quality.value = status.text("preferredQuality", "automatic")
+        }
+    }
+
     fun changeQuality(value: String, current: Boolean = false) {
         if (_qualityBusy.value || value !in NativePlayback.qualities) return
         val state = player.value
@@ -690,7 +808,10 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
             try {
                 val identity = if (current) provider(currentTrack!!.providerId, currentTrack.profileId) else provider()
                 val result = core.objectResult(if (current) "provider_set_current_quality" else "provider_set_preferred_quality", identity.put("quality", value))
-                if (current) snapshots.trySend(result.toString()) else _quality.value = result.text("preferredQuality", value)
+                if (current) snapshots.trySend(result.toString()) else {
+                    preferredQualityRevision++
+                    _quality.value = result.text("preferredQuality", value)
+                }
             } finally { _qualityBusy.value = false }
         }
     }
@@ -713,7 +834,8 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         } else core.objectResult("provider_account_snapshot", provider(scope.first, scope.second))
         if (scope != (route.value.providerId to route.value.profileId)) return
         val next = AccountUi.parse(value)
-        if (accountScope != scope || next.revision != _account.value.revision || next.authenticated != _account.value.authenticated) {
+        val previous = _account.value
+        if (accountScope != scope || next.revision != previous.revision || next.authenticated != previous.authenticated || next.identity != previous.identity) {
             cancelPlaybackPreparation()
             favoriteAuthorityJob?.cancel()
             favoriteAuthorityRevision = null
@@ -756,12 +878,12 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
             var restoreRetry = 0
             while (observing) {
                 val snapshot = account.value
-                val retry = snapshot.state == "secure-store-unavailable" || (snapshot.state == "network-error" && snapshot.attempt.isBlank())
+                val retry = snapshot.restoreNeedsRetry
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (!_accountBusy.value && (snapshot.authenticated || retry) && now - lastAccountRefreshAt >= if (retry) 5_000 else 60_000) {
-                    refreshAccountSession()?.join()
+                    accountAction { syncInBackground("provider_account_refresh") { revalidateAccount(background = true) } }?.join()
                 }
-                val stillRetry = account.value.state == "secure-store-unavailable" || (account.value.state == "network-error" && account.value.attempt.isBlank())
+                val stillRetry = account.value.restoreNeedsRetry
                 if (stillRetry) delay(listOf(5_000L, 15_000L, 30_000L, 60_000L)[restoreRetry.coerceAtMost(3)].also { restoreRetry++ })
                 else { restoreRetry = 0; delay(5 * 60_000L) }
             }
@@ -830,7 +952,10 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     }
 
     fun signOut() = accountAction {
-        core.invoke("provider_sign_out", provider()); refreshAccount(); pageCache.clear(); load(refresh = true)
+        core.invoke("provider_sign_out", provider())
+        refreshAccount()
+        pageCache.clear()
+        load(refresh = route.value.kind != "home")
     }
 
     fun previewIssue(category: String, summary: String, description: String) {
@@ -840,10 +965,12 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         _issueState.value = NativeIssueState(draftKey = draftKey, busy = true)
         action {
             try {
+                val details = withContext(Dispatchers.IO) { androidSupportDetails(getApplication<Application>()) }
                 val result = core.objectResult("issue_reporter_preview", JSONObject()
                     .put("draft", JSONObject().put("category", category)
                         .put("summary", summary).put("description", description))
-                    .put("request", JSONObject()))
+                    .put("request", JSONObject())
+                    .put("hostDetails", androidSupportText(details)))
                 _issueState.value = NativeIssueState(draftKey = draftKey, preview = NativeIssuePreview(
                     result.text("title"), result.text("body"), result.text("url"), result.optBoolean("tooLongForBrowser")))
             } catch (error: CancellationException) { throw error }
@@ -851,14 +978,26 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         }
     }
 
+    fun copyIssueReport(context: Context, openWebsite: Boolean = false) {
+        val preview = _issueState.value.preview ?: return
+        if (_issueState.value.busy) return
+        notify(copyFeedbackReport(context, preview.text, openWebsite))
+    }
+
     fun openIssuePreview(context: Context) {
         val preview = _issueState.value.preview ?: return
-        if (preview.tooLong || _issueState.value.busy) return
+        if (_issueState.value.busy) return
+        val url = if (preview.tooLong) GITHUB_ISSUES else preview.url
         _issueState.value = _issueState.value.copy(busy = true)
         action {
             try {
-                core.invoke("issue_reporter_validate_url", JSONObject().put("url", preview.url))
-                openProjectUrl(context, preview.url)
+                core.invoke("issue_reporter_validate_url", JSONObject().put("url", url))
+                if (preview.tooLong) {
+                    val copyResult = copyFeedbackReport(context, preview.text, openWebsite = false)
+                    notify(copyResult)
+                    if (copyResult == R.string.native_issue_copy_failed) return@action
+                }
+                openProjectUrl(context, url)
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) { _message.value = errorText(error, R.string.native_issue_failed) }
             finally { _issueState.value = _issueState.value.copy(busy = false) }
@@ -870,12 +1009,21 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         _diagnostics.value = _diagnostics.value.copy(loading = true, error = false)
         action {
             try {
+                val details = withContext(Dispatchers.IO) { androidSupportDetails(getApplication<Application>()) }
+                val systemExit = details.optJSONObject("lastAbnormalExit")?.let {
+                    NativeAbnormalExit(it.getString("reason"), it.getLong("time"))
+                }
+                val managedExit = details.optJSONObject("lastManagedCrash")?.optLong("time")?.takeIf { it > 0 }?.let {
+                    NativeAbnormalExit("java-crash", it)
+                }
+                val lastExit = listOfNotNull(systemExit, managedExit).maxByOrNull { it.timeMs }
+                _diagnostics.value = _diagnostics.value.copy(lastExit = lastExit)
                 val result = core.objectResult("diagnostics_snapshot", JSONObject().put("request", JSONObject()))
                 val errors = result.optJSONArray("recentErrors").objects().takeLast(20).map {
                     listOf(it.text("domain"), it.text("code"), it.text("message")).filter(String::isNotBlank).joinToString(" · ")
                 }
                 _diagnostics.value = NativeDiagnosticsState(
-                    logLevel = result.text("logLevel", "info"), recentErrors = errors,
+                    logLevel = result.text("logLevel", "info"), recentErrors = errors, lastExit = lastExit,
                 )
             } catch (error: CancellationException) { throw error }
             catch (_: Exception) { _diagnostics.value = _diagnostics.value.copy(loading = false, error = true) }
@@ -883,18 +1031,19 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
     }
 
     fun setDiagnosticsLevel(level: String) {
-        if (level !in setOf("info", "debug", "trace") || _diagnostics.value.busy || _diagnostics.value.loading) return
+        if (NativeLogDetail.entries.none { it.key == level } || _diagnostics.value.busy || _diagnostics.value.loading) return
+        if (_diagnostics.value.logLevel == level && !_diagnostics.value.error) return
         _diagnostics.value = _diagnostics.value.copy(busy = true)
         action {
             try {
-                core.invoke("diagnostics_set_log_level", JSONObject().put("level", level))
-                _diagnostics.value = _diagnostics.value.copy(busy = false)
-                loadDiagnostics()
+                val applied = core.invoke("diagnostics_set_log_level", JSONObject().put("level", level))
+                if (applied != level) throw CoreFailure("core.protocol", "")
+                _diagnostics.value = _diagnostics.value.copy(logLevel = level)
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) {
-                _diagnostics.value = _diagnostics.value.copy(busy = false)
                 _message.value = errorText(error, R.string.native_action_failed)
             }
+            finally { _diagnostics.value = _diagnostics.value.copy(busy = false) }
         }
     }
 
@@ -922,15 +1071,9 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         _diagnostics.value = _diagnostics.value.copy(busy = true)
         action {
             try {
-                val directory = File(getApplication<Application>().cacheDir, "diagnostics").apply { mkdirs() }
+                val directory = File(getApplication<Application>().cacheDir, "diagnostics")
                 val file = File(directory, "YAQMC-diagnostics-" + System.currentTimeMillis() + ".zip")
-                val result = core.objectResult("diagnostics_export_bundle_to", JSONObject()
-                    .put("path", file.absolutePath)
-                    .put("request", JSONObject().put("includeLogs", true).put("overrideUnresolved", false)))
-                val target = File(result.text("path")).canonicalFile
-                if (target.parentFile != directory.canonicalFile || !target.isFile || target.length() == 0L) {
-                    throw CoreFailure("core.protocol", "")
-                }
+                val target = exportDiagnosticBundle(file)
                 val uri = FileProvider.getUriForFile(context, context.packageName + ".diagnostics", target)
                 val send = Intent(Intent.ACTION_SEND).apply {
                     type = "application/zip"
@@ -942,6 +1085,104 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
             } catch (error: CancellationException) { throw error }
             catch (_: Exception) { _message.value = NativeText(R.string.native_diag_export_failed) }
             finally { _diagnostics.value = _diagnostics.value.copy(busy = false) }
+        }
+    }
+
+    private data class DiagnosticUploadAttempt(
+        val id: String, val description: String, val file: File, val exported: Boolean = false,
+    )
+
+    private suspend fun exportDiagnosticBundle(file: File, description: String = ""): File {
+        val details = withContext(Dispatchers.IO) {
+            file.parentFile?.mkdirs()
+            androidSupportDetails(getApplication<Application>())
+        }
+        val request = JSONObject().put("includeLogs", true).put("overrideUnresolved", false)
+            .put("hostPayload", details)
+        if (description.isNotEmpty()) request.put("description", description)
+        val result = core.objectResult("diagnostics_export_bundle_to", JSONObject()
+            .put("path", file.absolutePath).put("request", request))
+        return withContext(Dispatchers.IO) {
+            val target = File(result.text("path")).canonicalFile
+            if (target != file.canonicalFile || !target.isFile || target.length() == 0L) {
+                throw CoreFailure("core.protocol", "")
+            }
+            target
+        }
+    }
+
+    fun submitDiagnosticBundle(description: String) {
+        if (_diagnosticUpload.value.busy || _diagnostics.value.busy || _diagnostics.value.loading) return
+        val normalized = description.trim()
+        if (normalized.toByteArray(Charsets.UTF_8).size > DIAGNOSTIC_DESCRIPTION_MAX_BYTES) return
+        discardDiagnosticUpload()
+        val id = UUID.randomUUID().toString()
+        val directory = File(getApplication<Application>().cacheDir, "diagnostic-uploads")
+        val attempt = DiagnosticUploadAttempt(id, normalized, File(directory, "$id.zip"))
+        diagnosticUploadAttempt = attempt
+        runDiagnosticUpload(attempt)
+    }
+
+    fun retryDiagnosticBundle() {
+        if (_diagnosticUpload.value.busy || !_diagnosticUpload.value.canRetry || _diagnostics.value.busy || _diagnostics.value.loading) return
+        diagnosticUploadAttempt?.let(::runDiagnosticUpload)
+    }
+
+    private fun discardDiagnosticUpload() {
+        diagnosticUploadAttempt?.file?.delete()
+        diagnosticUploadAttempt = null
+    }
+
+    private fun runDiagnosticUpload(attempt: DiagnosticUploadAttempt) {
+        _diagnosticUpload.value = NativeDiagnosticUploadState(preparing = true)
+        action {
+            try {
+                if (attempt.exported) {
+                    if (!withContext(Dispatchers.IO) { attempt.file.isFile }) {
+                        discardDiagnosticUpload()
+                        _diagnosticUpload.value = NativeDiagnosticUploadState(error = R.string.native_diag_upload_missing)
+                        return@action
+                    }
+                } else {
+                    withContext(Dispatchers.IO) {
+                        // Files from a terminated upload process are private cache entries.
+                        attempt.file.parentFile?.listFiles()?.forEach {
+                            if (it != attempt.file && it.isFile && it.extension == "zip") it.delete()
+                        }
+                    }
+                    exportDiagnosticBundle(attempt.file, attempt.description)
+                    diagnosticUploadAttempt = attempt.copy(exported = true)
+                }
+                _diagnosticUpload.value = NativeDiagnosticUploadState(progress = 0)
+                val receipt = withContext(Dispatchers.IO) {
+                    uploadDiagnostics(attempt.file, attempt.id) { progress ->
+                        _diagnosticUpload.update { current ->
+                            if (current.progress != null) current.copy(progress = progress) else current
+                        }
+                    }
+                }
+                discardDiagnosticUpload()
+                _diagnosticUpload.value = NativeDiagnosticUploadState(receipt = receipt)
+            } catch (error: CancellationException) {
+                discardDiagnosticUpload()
+                _diagnosticUpload.value = NativeDiagnosticUploadState()
+                throw error
+            } catch (error: Exception) {
+                val exported = diagnosticUploadAttempt?.exported == true
+                val status = (error as? DiagnosticUploadHttpError)?.status
+                val serverUnavailable = status != null && status in 500..599
+                val canRetry = status == null || status == 408 || status == 429 || serverUnavailable
+                if (!canRetry) discardDiagnosticUpload()
+                val message = when {
+                    !exported -> R.string.native_diag_export_failed
+                    status == 413 || status == 414 -> R.string.native_diag_upload_too_large
+                    status == 429 -> R.string.native_diag_upload_rate_limit
+                    serverUnavailable -> R.string.native_diag_upload_server_unavailable
+                    status == null || status == 408 -> R.string.native_diag_upload_failed
+                    else -> R.string.native_diag_upload_rejected
+                }
+                _diagnosticUpload.value = NativeDiagnosticUploadState(error = message, canRetry = canRetry)
+            }
         }
     }
 
@@ -1020,15 +1261,30 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         }
     }
 
-    fun refreshAccountSession() = accountAction {
+    fun refreshAccountSession() = accountAction { revalidateAccount(background = false) }
+
+    private suspend fun revalidateAccount(background: Boolean) {
         lastAccountRefreshAt = android.os.SystemClock.elapsedRealtime()
-        val wasAuthenticated = account.value.authenticated
-        core.invoke("provider_account_refresh", provider())
+        val before = account.value
+        val scope = route.value.providerId to route.value.profileId
+        if (background) {
+            syncInBackground("provider_account_refresh") { core.invoke("provider_account_refresh", provider(scope.first, scope.second)) }
+        } else {
+            core.invoke("provider_account_refresh", provider(scope.first, scope.second))
+        }
+        if (scope != (route.value.providerId to route.value.profileId)) return
         refreshAccount()
+        val home = route.value.kind == "home" || route.value.usesQqHome
+        if (home) {
+            if (before.authenticated != account.value.authenticated || before.identity != account.value.identity ||
+                (before.restoreNeedsRetry && !account.value.restoreNeedsRetry)) {
+                refreshHomeForAccountChange(before)
+                return
+            }
+            if (background || (before.authenticated && pageJob?.isActive == true && page.value.loaded)) return
+        }
         pageCache.clear()
         if (route.value.kind !in setOf("account", "settings", "library")) {
-            val home = route.value.kind == "home"
-            if (home && wasAuthenticated && account.value.authenticated && pageJob?.isActive == true && page.value.loaded) return@accountAction
             load(refresh = !home, keepContent = home)
         }
     }
@@ -1043,6 +1299,29 @@ internal class NativeViewModel(application: Application, val core: NativeCoreApi
         try { block() }
         catch (error: CancellationException) { throw error }
         catch (error: Exception) { _message.value = errorText(error, R.string.native_action_failed) }
+    }
+
+    private suspend fun <T> syncInBackground(request: String, block: suspend () -> T): T? {
+        return try { block() }
+        catch (error: CancellationException) { throw error }
+        catch (error: Exception) { logBackgroundFailure(request, error); null }
+    }
+
+    private fun logBackgroundFailure(request: String, error: Exception) {
+        val code = when (val code = (error as? CoreFailure)?.code) {
+            "core.protocol", "core.command_error", "core.unavailable", "core.timeout", "host.denied", "timeout" -> code
+            null -> "unexpected"
+            else -> "request-failed"
+        }
+        val message = "$request · $code"
+        Log.w("YaqmcSync", message)
+        viewModelScope.launch {
+            try {
+                core.invoke("diagnostics_log_frontend", JSONObject().put("entries", JSONArray().put(JSONObject()
+                    .put("level", "warn").put("target", "android.sync").put("message", message))))
+            } catch (error: CancellationException) { throw error }
+            catch (_: Exception) { /* Logcat already contains the failure. */ }
+        }
     }
 
     private fun errorText(error: Exception, fallback: Int): NativeText {

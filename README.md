@@ -8,7 +8,7 @@
 
 YAQMC-Android 是 [YAQMC](https://github.com/YAQMC/YAQMC) 的 Android 原生版，面向日常听歌进行精简和优化。
 
-**[下载安卓版](https://github.com/YAQMC/YAQMC-Android/releases/latest)** · [版本记录](https://github.com/YAQMC/YAQMC-Android/releases) · [问题反馈](https://github.com/YAQMC/YAQMC-Android/issues)
+**[下载安卓版](https://ltzu.top/download)** · [GitHub 版本记录](https://github.com/YAQMC/YAQMC-Android/releases) · [免登录反馈](https://ltzu.top/yaqmc/feedback)
 
 ## 界面预览
 
@@ -45,7 +45,7 @@ YAQMC-Android 是 [YAQMC](https://github.com/YAQMC/YAQMC) 的 Android 原生版�
 
 **覆盖安装。** `0.1.6` 及后续版本沿用新包名和本项目签名；从 `0.1.5` 或更早版本切换时，`0.1.6` 会单独安装，登录需重新授权。
 
-使用问题和建议请提交到 [Issues](https://github.com/YAQMC/YAQMC-Android/issues)，附上应用版本、设备与系统版本、复现步骤和实际结果。截图与日志请移除账号凭据和私人信息。
+**反馈问题。** 从“设置 → 诊断与反馈”可提交脱敏诊断包。旧版可先用“分享诊断包”保存 ZIP，再到网站上传。遇到连续闪退，直接用浏览器填写出错前的操作、重开后的表现、应用版本和手机型号。提交成功后可凭反馈编号补充信息。[免登录反馈](https://ltzu.top/yaqmc/feedback) · [GitHub Issues](https://github.com/YAQMC/YAQMC-Android/issues)
 
 ## 后续方向
 

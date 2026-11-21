@@ -3,7 +3,9 @@ package org.yaqmc.android.nativeui
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.content.ClipboardManager
 import android.net.Uri
+import android.os.Build
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.StateRestorationTester
@@ -23,6 +25,7 @@ import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
+import org.yaqmc.android.DiagnosticUploadHttpError
 import org.yaqmc.android.R
 import org.yaqmc.android.update.AndroidUpdateResult
 import org.yaqmc.android.update.ReleaseCandidate
@@ -35,6 +38,7 @@ class NativeMaintenanceUiTest {
     @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeDevicePreferences(ComponentActivity::class.java)).around(compose)
     private val calls = CopyOnWriteArrayList<String>()
     private var respond: suspend (String, JSONObject) -> Any? = { _, _ -> JSONObject() }
+    private var upload: suspend (File, String, (Int) -> Unit) -> String = { _, _, _ -> error("Unexpected upload") }
     private var update: AndroidUpdateResult = AndroidUpdateResult.NotAvailable
     private lateinit var model: NativeViewModel
 
@@ -47,13 +51,27 @@ class NativeMaintenanceUiTest {
                 if (method == "diagnostics_export_bundle_to") assertFalse("export uses the main UI origin", host)
                 return respond(method, params)
             }
-        }, checkUpdate = { update })
+        }, checkUpdate = { update }, uploadDiagnostics = { file, id, progress -> upload(file, id, progress) })
     }
 
     private fun install(route: String) {
         create()
         compose.runOnUiThread { model.navigate(NativeRoute(route), root = true) }
         compose.setContent { NativeApp(model, {}, { _, _ -> }, {}) }
+    }
+
+    @Test fun openingHomeDoesNotProbeProviderStatusForTheSettingsQuality() {
+        respond = { method, _ ->
+            if (method == "provider_status") JSONObject().put("preferredQuality", "lossless") else JSONObject()
+        }
+        install("home")
+        compose.runOnIdle { model.observe() }
+        compose.waitUntil(5000) { "continuation_snapshot" in calls && model.page.value.loaded }
+        assertFalse("provider_status" in calls)
+        compose.onNodeWithTag("open-settings").performClick()
+        compose.waitUntil(5000) { model.quality.value == "lossless" }
+        assertEquals(1, calls.count { it == "provider_status" })
+        compose.runOnIdle { model.stopObserving() }
     }
 
     @Test fun unexpectedBackendErrorsShowLocalizedFeedback() {
@@ -171,11 +189,12 @@ class NativeMaintenanceUiTest {
         respond = { method, params -> when (method) {
             "diagnostics_snapshot" -> if (first) { first = false; pending.await() }
                 else JSONObject().put("logLevel", level)
-            "diagnostics_set_log_level" -> { level = params.getString("level"); null }
+            "diagnostics_set_log_level" -> { level = params.getString("level"); level }
             "diagnostics_clear_logs" -> throw CoreFailure("timeout", "")
             else -> JSONObject()
         } }
         install("diagnostics")
+        compose.waitUntil(5000) { calls.contains("diagnostics_snapshot") }
         compose.onNodeWithTag("diagnostics-level-debug").assertIsNotEnabled()
         compose.runOnIdle { model.loadDiagnostics(); model.setDiagnosticsLevel("debug"); model.clearDiagnosticLogs() }
         assertEquals(1, calls.count { it == "diagnostics_snapshot" })
@@ -185,7 +204,8 @@ class NativeMaintenanceUiTest {
         compose.waitUntil(5000) { !model.diagnostics.value.loading }
         compose.onNodeWithTag("diagnostics-level-debug").performClick()
         compose.waitUntil(5000) { model.diagnostics.value.logLevel == "debug" && !model.diagnostics.value.loading }
-        compose.onNodeWithText("Clear old logs").performScrollTo().performClick()
+        compose.onNodeWithTag("diagnostics-list").performScrollToNode(hasText("Clear old logs"))
+        compose.onNodeWithText("Clear old logs").performClick()
         compose.onNodeWithText("Cancel").performClick()
         assertFalse(calls.contains("diagnostics_clear_logs"))
         compose.onNodeWithText("Clear old logs").performClick()
@@ -214,22 +234,78 @@ class NativeMaintenanceUiTest {
     }
 
     @Test fun issueDraftSurvivesRestorationAndEditingInvalidatesPreview() {
-        respond = { method, _ -> if (method == "issue_reporter_preview") JSONObject("""{"title":"Preview title","body":"Safe technical details","url":"https://github.com/YAQMC/YAQMC-Android/issues/new","tooLongForBrowser":false}""") else JSONObject() }
+        var logLevel = "info"
+        respond = { method, params -> when (method) {
+            "diagnostics_snapshot" -> JSONObject().put("logLevel", logLevel)
+            "diagnostics_set_log_level" -> { logLevel = params.getString("level"); logLevel }
+            "issue_reporter_preview" -> {
+                assertEquals("debug", logLevel)
+                assertEquals("Playback stops", params.getJSONObject("draft").getString("summary"))
+                assertEquals("Rotate the screen", params.getJSONObject("draft").getString("description"))
+                assertTrue(params.getString("hostDetails").contains("Android:"))
+                JSONObject("""{"title":"Preview title","body":"Safe technical details","url":"https://github.com/YAQMC/YAQMC-Android/issues/new","tooLongForBrowser":false}""")
+            }
+            else -> JSONObject()
+        } }
         create()
         compose.runOnIdle { model.navigate(NativeRoute("issue-report"), root = true) }
         val restoration = StateRestorationTester(compose)
         restoration.setContent { NativeApp(model, {}, { _, _ -> }, {}) }
+        val list = compose.onNodeWithTag("issue-report-list")
+        list.performScrollToNode(hasText("Short summary"))
         compose.onNodeWithText("Short summary").performTextInput("Playback stops")
+        list.performScrollToNode(hasText("Details and reproduction steps"))
         compose.onNodeWithText("Details and reproduction steps").performTextInput("Rotate the screen")
-        compose.onNodeWithText("Preview report").performScrollTo().performClick()
-        compose.onNodeWithText("Preview title").performScrollTo().assertIsDisplayed()
+        list.performScrollToNode(hasTestTag("feedback-log-level"))
+        compose.waitUntil(5000) { calls.contains("diagnostics_snapshot") && !model.diagnostics.value.loading }
+        compose.onNodeWithTag("feedback-log-level").performClick()
+        compose.onNodeWithTag("feedback-level-debug").performClick()
+        compose.waitUntil(5000) { model.diagnostics.value.logLevel == "debug" }
+        list.performScrollToNode(hasText("Preview report"))
+        compose.onNodeWithText("Preview report").performClick()
+        compose.waitUntil(5000) { model.issueState.value.preview != null }
+        list.performScrollToNode(hasText("Preview title"))
+        compose.onNodeWithText("Preview title").assertIsDisplayed()
+        list.performScrollToNode(hasText("Copy report and open feedback website"))
+        capture("feedback-preview")
         restoration.emulateSavedInstanceStateRestore()
-        compose.onNodeWithText("Playback stops").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Rotate the screen").assertExists()
+        list.performScrollToNode(hasText("Rotate the screen"))
+        compose.onNodeWithText("Rotate the screen").assertIsDisplayed()
+        list.performScrollToNode(hasText("Playback stops"))
+        compose.onNodeWithText("Playback stops").assertIsDisplayed()
         compose.onNodeWithText("Playback stops").performTextReplacement("Edited summary")
         compose.onNodeWithText("Open GitHub issue form").assertDoesNotExist()
         assertFalse(calls.contains("issue_reporter_validate_url"))
         capture("pr9-issue")
+    }
+
+    @Test fun websiteFeedbackCopiesReviewedTextAndOpensOnlyTheFixedAddress() {
+        var opened: Intent? = null
+        val context = object : ContextWrapper(compose.activity) {
+            override fun startActivity(intent: Intent) { opened = intent }
+        }
+        respond = { method, _ -> if (method == "issue_reporter_preview") {
+            JSONObject().put("title", "Reviewed title").put("body", "Reviewed details").put("tooLongForBrowser", true)
+        } else JSONObject() }
+        install("issue-report")
+        compose.runOnIdle { model.previewIssue("bug", "Draft", "Draft details") }
+        compose.waitUntil(5000) { model.issueState.value.preview != null }
+        compose.runOnIdle {
+            val clipboard = checkNotNull(context.getSystemService(ClipboardManager::class.java))
+            val previous = clipboard.primaryClip
+            try {
+                model.copyIssueReport(context, openWebsite = true)
+                val report = clipboard.primaryClip
+                assertEquals("Reviewed title\n\nReviewed details", report?.getItemAt(0)?.text?.toString())
+                assertTrue(report?.description?.extras?.getBoolean("android.content.extra.IS_SENSITIVE") == true)
+                assertEquals(Intent.ACTION_VIEW, opened?.action)
+                assertEquals("https://ltzu.top/yaqmc/feedback", opened?.dataString)
+                assertEquals(R.string.native_issue_paste_on_site, model.message.value?.resource)
+            } finally {
+                if (previous != null) clipboard.setPrimaryClip(previous)
+                else if (Build.VERSION.SDK_INT >= 28) clipboard.clearPrimaryClip()
+            }
+        }
     }
 
     @Test fun diagnosticShareUsesReadableContentUriAndRejectsFailedExport() {
@@ -240,7 +316,9 @@ class NativeMaintenanceUiTest {
         var exported: File? = null
         var fail = false
         respond = { method, params -> if (method == "diagnostics_export_bundle_to") {
-            assertFalse(params.getJSONObject("request").getBoolean("overrideUnresolved"))
+            val request = params.getJSONObject("request")
+            assertFalse(request.getBoolean("overrideUnresolved"))
+            assertEquals("android", request.getJSONObject("hostPayload").getString("platform"))
             if (fail) throw CoreFailure("diagnostics.redaction", "UnresolvedRedactionPatterns([refresh_token])")
             File(params.getString("path")).also { exported = it; it.writeText("fake safe bundle") }
             JSONObject().put("path", exported!!.absolutePath)
@@ -263,6 +341,60 @@ class NativeMaintenanceUiTest {
             assertNull(sent)
             assertEquals(R.string.native_diag_export_failed, model.message.value?.resource)
         } finally { exported?.delete() }
+    }
+
+    @Test fun diagnosticUploadRequiresConfirmationAndRetriesWithTheSameBundle() {
+        val firstResponse = CompletableDeferred<Unit>()
+        val uploads = CopyOnWriteArrayList<Pair<String, File>>()
+        val receipt = "1234567890abcdef1234567890abcdef"
+        respond = { method, params -> if (method == "diagnostics_export_bundle_to") {
+            val request = params.getJSONObject("request")
+            assertFalse(request.getBoolean("overrideUnresolved"))
+            assertEquals("Playback stopped\n\nRotate the screen", request.getString("description"))
+            val file = File(params.getString("path")).apply { writeText("synthetic safe archive") }
+            JSONObject().put("path", file.absolutePath)
+        } else JSONObject() }
+        upload = { file, id, progress ->
+            assertEquals("synthetic safe archive", file.readText())
+            uploads += id to file
+            progress(50)
+            if (uploads.size == 1) {
+                firstResponse.await()
+                throw DiagnosticUploadHttpError(503)
+            }
+            receipt
+        }
+        install("issue-report")
+        val list = compose.onNodeWithTag("issue-report-list")
+        list.performScrollToNode(hasText("Short summary"))
+        compose.onNodeWithText("Short summary").performTextInput("Playback stopped")
+        list.performScrollToNode(hasText("Details and reproduction steps"))
+        compose.onNodeWithText("Details and reproduction steps").performTextInput("Rotate the screen")
+        compose.waitUntil(5000) { calls.contains("diagnostics_snapshot") && !model.diagnostics.value.loading }
+        list.performScrollToNode(hasTestTag("diagnostics-submit"))
+        val submit = compose.onNodeWithTag("diagnostics-submit")
+        submit.performClick()
+        compose.onNodeWithTag("diagnostics-submit-description").assertTextContains("Playback stopped\n\nRotate the screen")
+        compose.onNodeWithText("Cancel").performClick()
+        assertTrue(uploads.isEmpty())
+        assertFalse(calls.contains("diagnostics_export_bundle_to"))
+
+        submit.performClick()
+        compose.onNodeWithTag("diagnostics-submit-confirm").performClick()
+        compose.waitUntil(5000) { model.diagnosticUpload.value.progress == 50 }
+        capture("feedback-upload-progress")
+        firstResponse.complete(Unit)
+        compose.waitUntil(5000) { model.diagnosticUpload.value.canRetry }
+        assertEquals(R.string.native_diag_upload_server_unavailable, model.diagnosticUpload.value.error)
+        list.performScrollToNode(hasTestTag("diagnostics-submit-retry"))
+        compose.onNodeWithTag("diagnostics-submit-retry").performClick()
+        compose.waitUntil(5000) { model.diagnosticUpload.value.receipt == receipt }
+        assertEquals(1, calls.count { it == "diagnostics_export_bundle_to" })
+        assertEquals(uploads[0], uploads[1])
+        assertFalse(uploads[0].second.exists())
+        list.performScrollToNode(hasTestTag("diagnostics-receipt"))
+        compose.onNodeWithTag("diagnostics-receipt").assertTextContains(receipt, substring = true)
+        capture("feedback-upload-receipt")
     }
 
     @Test fun updateStatesAreDistinctAndMissingBrowserDoesNotCrash() {

@@ -852,7 +852,7 @@ fn detect_unresolved_patterns(text: &str) -> Vec<String> {
     findings
 }
 
-fn collect_log_files(log_dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn collect_log_files(log_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(log_dir) else {
         return Vec::new();
     };
@@ -865,7 +865,7 @@ fn collect_log_files(log_dir: &Path) -> Vec<PathBuf> {
                 .and_then(|name| name.to_str())
                 .map(|name| name.starts_with(LOG_FILE_PREFIX))
                 .unwrap_or(false);
-            if is_log {
+            if is_log && path.is_file() {
                 Some(path)
             } else {
                 None
