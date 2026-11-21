@@ -45,6 +45,56 @@ class NativePlaybackLiveTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val context get() = instrumentation.targetContext
 
+    @Test fun playAllOnLargePlaylistReturnsThePlayingQueue() = runBlocking {
+        withPlayback("large-playlist", liveProvider = false) { core, receipt ->
+            val tracks = JSONArray()
+            repeat(551) { index ->
+                val song = fixture("large-playlist-$index").json
+                val variants = JSONArray()
+                for (size in listOf(150, 300, 600, 800, 1000)) {
+                    val src = "file:///android_asset/catalog/album-covers/large-playlist/cover-$index-$size.jpg"
+                    variants.put(JSONObject().put("src", src).put("width", size).put("height", size))
+                }
+                song.getJSONObject("artwork").put("variants", variants)
+                song.put("artists", JSONArray().put(JSONObject().put("id", "fixture-artist-$index").put("name", "Playlist fixture artist")))
+                tracks.put(song)
+            }
+            val playlist = JSONObject().put("id", "large-playlist").put("title", "551-track playlist").put("tracks", tracks)
+            val model = withContext(Dispatchers.Main) {
+                val activity = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).filterIsInstance<NativeActivity>().first()
+                ViewModelProvider(activity)[NativeViewModel::class.java].also {
+                    it.navigate(NativeRoute("playlist", "large-playlist", playlist = playlist.toString()))
+                }
+            }
+            compose.waitUntil(15000) { model.page.value.page.tracks.size == tracks.length() }
+            receipt.put("queueChanged", true)
+            try {
+                compose.onNodeWithTag("catalog-play-all").performClick()
+                compose.waitUntil(30000) {
+                    model.failedPagePlayback.value != null ||
+                        (!model.preparingPage.value && model.player.value.playing && model.player.value.queue.size == tracks.length())
+                }
+                val error = model.failedPagePlayback.value?.second?.resource
+                receipt.put("playAllError", error?.let(context::getString) ?: JSONObject.NULL)
+                if (error != null) {
+                    val rejected = runCatching { core.objectResult("player_snapshot") }.exceptionOrNull()
+                    receipt.put("snapshotError", rejected?.message ?: JSONObject.NULL)
+                }
+                assertNull("Play all showed an error: ${error?.let(context::getString)}", error)
+                val snapshot = core.objectResult("player_snapshot")
+                receipt.put("snapshotBytes", snapshot.toString().toByteArray().size)
+                assertTrue(receipt.getInt("snapshotBytes") > 1024 * 1024)
+                assertEquals(tracks.objects().map { it.text("id") }, snapshot.getJSONArray("queueEntries").objects().map { it.getJSONObject("track").text("id") })
+                val playing = awaitPlayer(core) { it.playing && it.position > 0 }
+                assertEquals(tracks.getJSONObject(0).text("id"), playing.current?.id)
+                receipt.put("queueLength", playing.queue.size).put("positionMs", playing.position)
+            } finally {
+                // Leave a small queue so restoration also works when checking the old Core.
+                core.invoke("player_play_tracks", JSONObject().put("request", JSONObject().put("tracks", JSONArray().put(tracks.getJSONObject(0)))))
+            }
+        }
+    }
+
     @Test fun transportBackgroundNotificationMediaControllerAndDeepLink() = runBlocking {
         withPlayback("transport", liveProvider = false) { core, receipt ->
             val available = listOf(fixture("first"), fixture("second"))

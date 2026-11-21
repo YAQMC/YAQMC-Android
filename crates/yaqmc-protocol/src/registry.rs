@@ -8,6 +8,8 @@ use crate::{ErrorCode, DEFAULT_METHOD_PAYLOAD_BYTES, FRAME_HARD_CAP_BYTES};
 const PLUGIN_READ_ASSET_RESPONSE_CAP: u32 = 6 * 1024 * 1024;
 // Public playlist details include every paginated track, unlike feed previews.
 const PLAYLIST_DETAIL_RESPONSE_CAP: u32 = 16 * 1024 * 1024;
+// A snapshot carries the full queue in both queue and queueEntries.
+const PLAYER_SNAPSHOT_RESPONSE_CAP: u32 = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -204,11 +206,7 @@ const METHODS: &[MethodSpec] = &[
         MethodOwner::Core,
         OriginClass::Main,
     ),
-    spec(
-        "provider_set_current_quality",
-        MethodOwner::Core,
-        OriginClass::Main,
-    ),
+    player_snapshot_spec("provider_set_current_quality", OriginClass::Main),
     spec(
         "provider_account_login_methods",
         MethodOwner::Core,
@@ -328,11 +326,7 @@ const METHODS: &[MethodSpec] = &[
         MethodOwner::Core,
         OriginClass::Main,
     ),
-    spec(
-        "qqmusic_set_current_quality",
-        MethodOwner::Core,
-        OriginClass::Main,
-    ),
+    player_snapshot_spec("qqmusic_set_current_quality", OriginClass::Main),
     spec(
         "qqmusic_account_snapshot",
         MethodOwner::Core,
@@ -412,66 +406,30 @@ const METHODS: &[MethodSpec] = &[
     ),
     spec("continuation_start", MethodOwner::Core, OriginClass::Main),
     spec("continuation_end", MethodOwner::Core, OriginClass::Main),
-    spec("player_snapshot", MethodOwner::Core, OriginClass::Main),
-    spec("player_hydrate_queue", MethodOwner::Core, OriginClass::Main),
-    spec("player_play_tracks", MethodOwner::Core, OriginClass::Main),
-    spec(
-        "player_play_from_queue",
-        MethodOwner::Core,
-        OriginClass::Main,
-    ),
-    spec(
-        "player_play_queue_entry",
-        MethodOwner::Core,
-        OriginClass::Main,
-    ),
-    spec("player_play", MethodOwner::Core, OriginClass::Main),
-    spec("player_pause", MethodOwner::Core, OriginClass::Main),
-    spec("player_toggle", MethodOwner::Core, OriginClass::Surfaces),
-    spec("player_next", MethodOwner::Core, OriginClass::Surfaces),
-    spec("player_previous", MethodOwner::Core, OriginClass::Surfaces),
-    spec("player_seek", MethodOwner::Core, OriginClass::Main),
-    spec("player_set_volume", MethodOwner::Core, OriginClass::Main),
-    spec("player_toggle_muted", MethodOwner::Core, OriginClass::Main),
-    spec(
-        "player_toggle_shuffle",
-        MethodOwner::Core,
-        OriginClass::Main,
-    ),
-    spec("player_set_shuffle", MethodOwner::Core, OriginClass::Main),
-    spec("player_cycle_repeat", MethodOwner::Core, OriginClass::Main),
-    spec("player_set_repeat", MethodOwner::Core, OriginClass::Main),
-    spec(
-        "player_set_primary_playback_mode",
-        MethodOwner::Core,
-        OriginClass::Main,
-    ),
-    spec("player_add_to_queue", MethodOwner::Core, OriginClass::Main),
-    spec(
-        "player_add_tracks_to_queue",
-        MethodOwner::Core,
-        OriginClass::Main,
-    ),
-    spec(
-        "player_remove_from_queue",
-        MethodOwner::Core,
-        OriginClass::Main,
-    ),
-    spec(
-        "player_remove_queue_entry",
-        MethodOwner::Core,
-        OriginClass::Main,
-    ),
-    spec(
-        "player_reorder_queue_entry",
-        MethodOwner::Core,
-        OriginClass::Main,
-    ),
-    spec(
-        "player_play_next_queue_entry",
-        MethodOwner::Core,
-        OriginClass::Main,
-    ),
+    player_snapshot_spec("player_snapshot", OriginClass::Main),
+    player_snapshot_spec("player_hydrate_queue", OriginClass::Main),
+    player_snapshot_spec("player_play_tracks", OriginClass::Main),
+    player_snapshot_spec("player_play_from_queue", OriginClass::Main),
+    player_snapshot_spec("player_play_queue_entry", OriginClass::Main),
+    player_snapshot_spec("player_play", OriginClass::Main),
+    player_snapshot_spec("player_pause", OriginClass::Main),
+    player_snapshot_spec("player_toggle", OriginClass::Surfaces),
+    player_snapshot_spec("player_next", OriginClass::Surfaces),
+    player_snapshot_spec("player_previous", OriginClass::Surfaces),
+    player_snapshot_spec("player_seek", OriginClass::Main),
+    player_snapshot_spec("player_set_volume", OriginClass::Main),
+    player_snapshot_spec("player_toggle_muted", OriginClass::Main),
+    player_snapshot_spec("player_toggle_shuffle", OriginClass::Main),
+    player_snapshot_spec("player_set_shuffle", OriginClass::Main),
+    player_snapshot_spec("player_cycle_repeat", OriginClass::Main),
+    player_snapshot_spec("player_set_repeat", OriginClass::Main),
+    player_snapshot_spec("player_set_primary_playback_mode", OriginClass::Main),
+    player_snapshot_spec("player_add_to_queue", OriginClass::Main),
+    player_snapshot_spec("player_add_tracks_to_queue", OriginClass::Main),
+    player_snapshot_spec("player_remove_from_queue", OriginClass::Main),
+    player_snapshot_spec("player_remove_queue_entry", OriginClass::Main),
+    player_snapshot_spec("player_reorder_queue_entry", OriginClass::Main),
+    player_snapshot_spec("player_play_next_queue_entry", OriginClass::Main),
     spec("player_set_lyrics", MethodOwner::Core, OriginClass::Main),
     spec("player_lyrics", MethodOwner::Core, OriginClass::Surfaces),
     spec(
@@ -810,6 +768,13 @@ const fn spec(name: &'static str, owner: MethodOwner, origins: OriginClass) -> M
         allowed_origins: origin_slice(origins),
         request_cap: DEFAULT_METHOD_PAYLOAD_BYTES,
         response_cap: response_cap(name),
+    }
+}
+
+const fn player_snapshot_spec(name: &'static str, origins: OriginClass) -> MethodSpec {
+    MethodSpec {
+        response_cap: PLAYER_SNAPSHOT_RESPONSE_CAP,
+        ..spec(name, MethodOwner::Core, origins)
     }
 }
 

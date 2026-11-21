@@ -4,6 +4,8 @@ pub(crate) mod comment_requests;
 mod events;
 mod methods;
 pub mod ops;
+#[cfg(test)]
+mod playback_tests;
 #[cfg(feature = "plugins")]
 mod plugin_ops;
 mod runtime;

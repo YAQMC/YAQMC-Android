@@ -9,7 +9,7 @@ use yaqmc_protocol::{
 #[test]
 fn registry_is_the_single_source_of_truth_for_native_and_host_methods() {
     let registry = methods();
-    assert_eq!(registry.len(), 207);
+    assert_eq!(registry.len(), 208);
     let names: HashSet<&str> = registry.iter().map(|spec| spec.name).collect();
     assert_eq!(names.len(), registry.len());
     assert!(method("player_snapshot").is_some());
@@ -66,11 +66,40 @@ fn method_caps_never_exceed_the_hard_cap_and_default_to_one_mib() {
         assert!(spec.response_cap > 0 && spec.response_cap <= FRAME_HARD_CAP_BYTES);
         assert_eq!(spec.request_cap, DEFAULT_METHOD_PAYLOAD_BYTES);
         let expected = match spec.name {
-            "plugin_read_asset" => method("plugin_read_asset").unwrap().response_cap,
-            "provider_playlist" | "qqmusic_playlist" => 16 * 1024 * 1024,
+            "plugin_read_asset" => 6 * 1024 * 1024,
+            "provider_playlist"
+            | "qqmusic_playlist"
+            | "provider_set_current_quality"
+            | "qqmusic_set_current_quality"
+            | "player_snapshot"
+            | "player_hydrate_queue"
+            | "player_play_tracks"
+            | "player_play_from_queue"
+            | "player_play_queue_entry"
+            | "player_play"
+            | "player_pause"
+            | "player_toggle"
+            | "player_next"
+            | "player_previous"
+            | "player_seek"
+            | "player_set_volume"
+            | "player_toggle_muted"
+            | "player_toggle_shuffle"
+            | "player_set_shuffle"
+            | "player_cycle_repeat"
+            | "player_set_repeat"
+            | "player_set_primary_playback_mode"
+            | "player_add_to_queue"
+            | "player_add_tracks_to_queue"
+            | "player_remove_from_queue"
+            | "player_remove_queue_entry"
+            | "player_reorder_queue_entry"
+            | "player_play_next_queue_entry" => 16 * 1024 * 1024,
             _ => DEFAULT_METHOD_PAYLOAD_BYTES,
         };
         assert_eq!(spec.response_cap, expected, "{}", spec.name);
+        assert!(spec.accepts_response_bytes(expected), "{}", spec.name);
+        assert!(!spec.accepts_response_bytes(expected + 1), "{}", spec.name);
     }
 
     let asset = method("plugin_read_asset").expect("plugin_read_asset");
